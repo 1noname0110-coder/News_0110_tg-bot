@@ -5,7 +5,6 @@
 
 import asyncio
 import logging
-import schedule
 import time
 from datetime import datetime
 from typing import Optional, List, Dict
@@ -336,3 +335,4 @@ def main():
 if __name__ == "__main__":
     # Запускаем бота при выполнении скрипта
     main()
+
