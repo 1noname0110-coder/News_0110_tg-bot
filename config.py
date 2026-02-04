@@ -10,13 +10,11 @@ from dotenv import load_dotenv
 
 # Загружаем переменные окружения из .env файла
 _BASE_DIR = Path(__file__).resolve().parent
-_ENV_PATHS = [
-    _BASE_DIR / ".env",
-    _BASE_DIR.parent / ".env",
-    Path.cwd() / ".env",
-]
-for env_path in _ENV_PATHS:
-    load_dotenv(env_path)
+_ENV_FILENAMES = (".env", ".env.example", "env_example.env")
+_ENV_DIRS = (_BASE_DIR, _BASE_DIR.parent, Path.cwd())
+for env_dir in _ENV_DIRS:
+    for env_name in _ENV_FILENAMES:
+        load_dotenv(env_dir / env_name)
 
 # Токен бота, полученный от @BotFather в Telegram
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')
