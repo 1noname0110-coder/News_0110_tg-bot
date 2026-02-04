@@ -4,10 +4,14 @@
 """
 
 import os
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 # Загружаем переменные окружения из .env файла
-load_dotenv()
+_BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(_BASE_DIR / ".env")
+load_dotenv(Path.cwd() / ".env")
 
 # Токен бота, полученный от @BotFather в Telegram
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')
