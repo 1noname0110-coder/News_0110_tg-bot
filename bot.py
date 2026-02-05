@@ -17,6 +17,8 @@ from database import NewsDatabase
 from news_collector import NewsCollector
 from post_generator import PostGenerator
 
+
+
 # Настройка логирования для отслеживания работы бота
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -335,4 +337,5 @@ def main():
 if __name__ == "__main__":
     # Запускаем бота при выполнении скрипта
     main()
+
 
