@@ -21,7 +21,7 @@ BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 
 # ID канала, куда будут публиковаться новости
 # Формат: @channel_username или -1001234567890 (числовой ID)
-CHANNEL_ID = os.getenv('CHANNEL_ID', '')
+CHANNEL_ID = os.getenv('CHANNEL_ID', '-1003531603514')
 
 # Максимальная длина поста в символах
 MAX_POST_LENGTH = 4500
