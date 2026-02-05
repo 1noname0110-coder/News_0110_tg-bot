@@ -10,7 +10,8 @@ from dotenv import load_dotenv
 
 # Загружаем переменные окружения из .env файла
 _BASE_DIR = Path(__file__).resolve().parent
-_ENV_FILENAMES = (".env", ".env.example", "env_example.env")
+# Загружаем только реальные файлы окружения, а не шаблоны с примерами
+_ENV_FILENAMES = (".env",)
 _ENV_DIRS = (_BASE_DIR, _BASE_DIR.parent, Path.cwd())
 for env_dir in _ENV_DIRS:
     for env_name in _ENV_FILENAMES:
