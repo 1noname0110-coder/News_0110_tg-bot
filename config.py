@@ -10,7 +10,8 @@ from dotenv import load_dotenv
 
 # Загружаем переменные окружения из .env файла
 _BASE_DIR = Path(__file__).resolve().parent
-_ENV_FILENAMES = (".env", ".env.example", "env_example.env")
+# Загружаем только реальные файлы окружения, а не шаблоны с примерами
+_ENV_FILENAMES = (".env",)
 _ENV_DIRS = (_BASE_DIR, _BASE_DIR.parent, Path.cwd())
 for env_dir in _ENV_DIRS:
     for env_name in _ENV_FILENAMES:
@@ -28,6 +29,9 @@ MAX_POST_LENGTH = 4500
 
 # Интервал публикации постов в минутах
 PUBLISH_INTERVAL_MINUTES = 30
+
+# Минимальная задержка перед публикацией новости, чтобы сгруппировать похожие темы
+PUBLISH_DELAY_MINUTES = 30
 
 # Количество новостей для проверки за один раз
 NEWS_CHECK_BATCH = 10
@@ -56,7 +60,6 @@ NEWS_SOURCES = [
     {'name': 'RT Мир', 'url': 'https://russian.rt.com/rss/news', 'category': 'world'},
     {'name': 'RT Политика', 'url': 'https://russian.rt.com/rss/politics', 'category': 'politics'},
     {'name': 'RT Технологии', 'url': 'https://russian.rt.com/rss/tech', 'category': 'tech'},
-    {'name': 'RT Наука', 'url': 'https://russian.rt.com/rss/science', 'category': 'science'},
     {'name': 'Регнум', 'url': 'https://regnum.ru/rss', 'category': 'general'},
     {'name': 'Новости Mail.ru', 'url': 'https://news.mail.ru/rss/all/', 'category': 'general'},
     {'name': 'Яндекс.Новости', 'url': 'https://news.yandex.ru/index.rss', 'category': 'general'},
@@ -85,12 +88,6 @@ NEWS_SOURCES = [
     {'name': 'Motor.ru', 'url': 'https://motor.ru/rss/news/', 'category': 'cars'},
     
     # Наука
-    {'name': 'N+1', 'url': 'https://nplus1.ru/rss', 'category': 'science'},
-    {'name': 'Элементы', 'url': 'https://elementy.ru/rss/news', 'category': 'science'},
-    {'name': 'Indicator.ru', 'url': 'https://indicator.ru/rss', 'category': 'science'},
-    {'name': 'Популярная Механика', 'url': 'https://www.popmech.ru/rss/', 'category': 'science'},
-    {'name': 'Scientific American Russian', 'url': 'https://www.scientificamerican.com/rss/', 'category': 'science'},
-    {'name': 'Science.ru', 'url': 'https://science.ru/rss', 'category': 'science'},
     
     # Политика
     {'name': 'Коммерсант Политика', 'url': 'https://www.kommersant.ru/RSS/section-politics.xml', 'category': 'politics'},
@@ -105,14 +102,10 @@ NEWS_SOURCES = [
     # Дополнительные источники для разнообразия
     {'name': 'Регнум Политика', 'url': 'https://regnum.ru/rss/politics', 'category': 'politics'},
     {'name': 'Регнум Экономика', 'url': 'https://regnum.ru/rss/economics', 'category': 'general'},
-    {'name': 'Регнум Наука', 'url': 'https://regnum.ru/rss/science', 'category': 'science'},
     {'name': 'Хабр Авто', 'url': 'https://habr.com/ru/rss/hub/cars/', 'category': 'cars'},
-    {'name': 'Хабр Наука', 'url': 'https://habr.com/ru/rss/hub/science/', 'category': 'science'},
     {'name': 'Хабр Гаджеты', 'url': 'https://habr.com/ru/rss/hub/mobile/', 'category': 'tech'},
     {'name': 'CNews Технологии', 'url': 'https://www.cnews.ru/inc/rss/technology.xml', 'category': 'tech'},
-    {'name': 'CNews Наука', 'url': 'https://www.cnews.ru/inc/rss/science.xml', 'category': 'science'},
     {'name': 'Hi-Tech Mail.ru Технологии', 'url': 'https://hi-tech.mail.ru/rss/technology/', 'category': 'tech'},
-    {'name': 'Hi-Tech Mail.ru Наука', 'url': 'https://hi-tech.mail.ru/rss/science/', 'category': 'science'},
     {'name': 'Ferra.ru Гаджеты', 'url': 'https://www.ferra.ru/rss/gadgets/', 'category': 'tech'},
     {'name': 'Ferra.ru Авто', 'url': 'https://www.ferra.ru/rss/auto/', 'category': 'cars'},
     {'name': '3DNews Технологии', 'url': 'https://3dnews.ru/news/rss/', 'category': 'tech'},
@@ -121,7 +114,19 @@ NEWS_SOURCES = [
 ]
 
 # Категории для балансировки контента
-CATEGORIES = ['general', 'politics', 'world', 'tech', 'cars', 'science']
+CATEGORIES = ['general', 'politics', 'world', 'tech', 'cars']
 
 # Минимальный интервал между постами одной категории (в минутах)
 MIN_INTERVAL_BETWEEN_SAME_CATEGORY = 30
+
+# Ключевые слова для отсева локальной криминальной хроники
+LOCAL_NOISE_CRIME_KEYWORDS = [
+    'пья', 'пьян', 'алкогол', 'дебош', 'мелк', 'карманн', 'краж', 'вор', 'граб',
+    'хулиган', 'свалил', 'угнал велосипед', 'украл велосипед'
+]
+
+# Маркеры локальных новостей уровня района/города
+LOCAL_NEWS_MARKERS = [
+    'в районе', 'на улице', 'местный житель', 'житель ', 'в городе', 'в посёлке', 'в поселке',
+    'по области', 'районный', 'городской суд', 'в администрации города'
+]
