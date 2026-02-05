@@ -4,17 +4,24 @@
 """
 
 import os
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 # Загружаем переменные окружения из .env файла
-load_dotenv()
+_BASE_DIR = Path(__file__).resolve().parent
+_ENV_FILENAMES = (".env", ".env.example", "env_example.env")
+_ENV_DIRS = (_BASE_DIR, _BASE_DIR.parent, Path.cwd())
+for env_dir in _ENV_DIRS:
+    for env_name in _ENV_FILENAMES:
+        load_dotenv(env_dir / env_name)
 
 # Токен бота, полученный от @BotFather в Telegram
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 
 # ID канала, куда будут публиковаться новости
 # Формат: @channel_username или -1001234567890 (числовой ID)
-CHANNEL_ID = os.getenv('CHANNEL_ID', '')
+CHANNEL_ID = os.getenv('CHANNEL_ID', '-1003531603514')
 
 # Максимальная длина поста в символах
 MAX_POST_LENGTH = 4500
