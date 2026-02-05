@@ -98,8 +98,11 @@ class PostGenerator:
         # Начинаем формировать пост
         post_parts = []
         
-        # Если есть связанная новость, добавляем ссылку на предыдущий пост
-        if related_news:
+        if news.get('is_merged_topic'):
+            topic_size = news.get('topic_size', 1)
+            post_parts.append(f"🧩 *Сводка по теме* · объединено источников: {topic_size}")
+            post_parts.append("")
+        elif related_news:
             post_parts.append(f"📰 *Дополнение к новости*")
             post_parts.append("")
         
@@ -122,9 +125,19 @@ class PostGenerator:
         # Добавляем источник и ссылку
         post_parts.append(f"📌 Источник: {source}")
         post_parts.append(f"🔗 [Читать полностью]({url})")
+
+        for extra_url in news.get('alternate_urls', [])[:3]:
+            post_parts.append(f"🔗 [Дополнительный источник]({extra_url})")
+
+        image_urls = news.get('images', [])
+        if image_urls:
+            post_parts.append("")
+            post_parts.append("🖼 Изображения по теме:")
+            for image_url in image_urls[:3]:
+                post_parts.append(f"• {image_url}")
         
         # Если есть связанная новость, добавляем ссылку на неё
-        if related_news:
+        if related_news and not news.get('is_merged_topic'):
             post_parts.append("")
             post_parts.append(f"📖 *Связанная новость:* {related_news['title']}")
         
@@ -168,8 +181,7 @@ class PostGenerator:
             'politics': '🏛️',
             'world': '🌍',
             'tech': '💻',
-            'cars': '🚗',
-            'science': '🔬'
+            'cars': '🚗'
         }
         return emoji_map.get(category, '📰')
     
