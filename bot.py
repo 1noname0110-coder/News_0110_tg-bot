@@ -90,6 +90,47 @@ class NewsBot:
         has_local_marker = any(marker in text for marker in config.LOCAL_NEWS_MARKERS)
         return has_crime and has_local_marker
 
+    def is_low_value_news(self, news: Dict) -> bool:
+        """Фильтрует пустые/кликбейтные новости-затычки."""
+        title = (news.get('title') or '').strip().lower()
+        description = (news.get('description') or '').strip().lower()
+        text = f"{title} {description}".strip()
+
+        if not title or len(title) < 12:
+            return True
+
+        # Пустое или слишком короткое описание, особенно если повторяет заголовок
+        normalized_title = re.sub(r'\s+', ' ', title)
+        normalized_description = re.sub(r'\s+', ' ', description)
+        if not normalized_description:
+            return True
+
+        if len(normalized_description) < config.MIN_DESCRIPTION_LENGTH:
+            return True
+
+        if normalized_description == normalized_title:
+            return True
+
+        if normalized_description.startswith(normalized_title):
+            tail = normalized_description[len(normalized_title):].strip(' .:-—')
+            if len(tail) < 30:
+                return True
+
+        # Слишком высокая текстовая похожесть заголовка и описания
+        title_tokens = self._title_tokens(normalized_title)
+        description_tokens = self._title_tokens(normalized_description)
+        if title_tokens and description_tokens:
+            overlap = len(title_tokens & description_tokens) / max(len(title_tokens), 1)
+            if overlap >= 0.9 and len(description_tokens) <= len(title_tokens) + 2:
+                return True
+
+        if any(pattern in text for pattern in config.LOW_VALUE_NEWS_PATTERNS):
+            # Если описание при этом очень короткое — почти точно затычка
+            if len(normalized_description) < 220:
+                return True
+
+        return False
+
     def group_news_by_url(self, news_list: List[Dict]) -> Dict[str, Dict]:
         grouped = {}
         now = datetime.now()
@@ -240,10 +281,23 @@ class NewsBot:
             all_news = await self.news_collector.collect_all_news()
             new_news = self.news_collector.filter_new_news(all_news, self.database)
 
-            filtered_news = [news for news in new_news if not self.is_unwanted_local_news(news)]
-            dropped_count = len(new_news) - len(filtered_news)
-            if dropped_count:
-                logger.info(f"Отфильтровано локальных криминальных новостей: {dropped_count}")
+            filtered_news = []
+            dropped_local_noise = 0
+            dropped_low_value = 0
+
+            for news in new_news:
+                if self.is_unwanted_local_news(news):
+                    dropped_local_noise += 1
+                    continue
+                if self.is_low_value_news(news):
+                    dropped_low_value += 1
+                    continue
+                filtered_news.append(news)
+
+            if dropped_local_noise:
+                logger.info(f"Отфильтровано локальных криминальных новостей: {dropped_local_noise}")
+            if dropped_low_value:
+                logger.info(f"Отфильтровано новостей-затычек: {dropped_low_value}")
 
             grouped_news = self.group_news_by_url(filtered_news)
             self.add_to_pending(grouped_news)

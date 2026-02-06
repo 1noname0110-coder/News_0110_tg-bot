@@ -75,6 +75,25 @@ class PostGenerator:
             text = text.replace(char, f'\\{char}')
         return text
     
+    def remove_title_echo(self, title: str, description: str) -> str:
+        """Удаляет дублирование заголовка в начале описания."""
+        clean_title = self.clean_text(title)
+        clean_title_lc = clean_title.lower().strip(' .:;-')
+        clean_description = self.clean_text(description)
+        description_lc = clean_description.lower().strip()
+
+        if not clean_description:
+            return clean_description
+
+        if description_lc == clean_title_lc:
+            return ''
+
+        if description_lc.startswith(clean_title_lc):
+            trimmed = clean_description[len(clean_title):].lstrip(' .,:;-\n\t')
+            return trimmed
+
+        return clean_description
+
     def format_post(self, news: Dict, related_news: Optional[Dict] = None) -> str:
         """
         Форматирует новость в текст поста для публикации.
@@ -88,6 +107,7 @@ class PostGenerator:
         """
         title = self.clean_text(news['title'])
         description = self.clean_text(news.get('description', ''))
+        description = self.remove_title_echo(title, description)
         url = news['url']
         # Поддерживаем как старый формат (одна категория), так и новый (список категорий)
         if 'sources' in news and isinstance(news['sources'], list):
