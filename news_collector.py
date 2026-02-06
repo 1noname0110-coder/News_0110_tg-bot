@@ -9,6 +9,7 @@ import asyncio
 import html
 import re
 from datetime import datetime
+from urllib.parse import urlparse
 from typing import List, Dict, Optional
 import logging
 
@@ -32,6 +33,41 @@ class NewsCollector:
         self.sources = sources
         self.timeout = 10  # Таймаут для запросов в секундах
     
+
+    def extract_image_urls(self, entry) -> List[str]:
+        """Извлекает URL изображений из RSS entry."""
+        image_urls = []
+
+        for media in entry.get('media_content', []):
+            url = media.get('url')
+            if url:
+                image_urls.append(url)
+
+        for media in entry.get('media_thumbnail', []):
+            url = media.get('url')
+            if url:
+                image_urls.append(url)
+
+        for enclosure in entry.get('enclosures', []):
+            url = enclosure.get('href') or enclosure.get('url')
+            media_type = enclosure.get('type', '')
+            if url and media_type.startswith('image/'):
+                image_urls.append(url)
+
+        summary = entry.get('summary', '') or entry.get('description', '')
+        summary_img_urls = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', summary, flags=re.IGNORECASE)
+        image_urls.extend(summary_img_urls)
+
+        deduplicated = []
+        seen = set()
+        for url in image_urls:
+            parsed = urlparse(url)
+            if parsed.scheme in {'http', 'https'} and url not in seen:
+                seen.add(url)
+                deduplicated.append(url)
+
+        return deduplicated
+
     async def fetch_feed(self, session: aiohttp.ClientSession, source: Dict) -> Optional[List[Dict]]:
         """
         Асинхронно получает новости из одного RSS источника.
@@ -66,6 +102,8 @@ class NewsCollector:
                         elif hasattr(entry, 'description'):
                             description = entry.description
                         
+                        image_urls = self.extract_image_urls(entry)
+
                         # Очищаем описание от HTML тегов
                         description = re.sub(r'<[^>]+>', '', description)
                         
@@ -97,7 +135,8 @@ class NewsCollector:
                                 'description': description,
                                 'source': source['name'],
                                 'category': source.get('category', 'general'),
-                                'published_at': published_time
+                                'published_at': published_time,
+                                'images': image_urls
                             })
                     
                     return news_items
