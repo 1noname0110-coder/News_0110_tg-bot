@@ -28,13 +28,13 @@ CHANNEL_ID = os.getenv('CHANNEL_ID', '-1003531603514')
 MAX_POST_LENGTH = 4500
 
 # Интервал публикации постов в минутах
-PUBLISH_INTERVAL_MINUTES = 30
+PUBLISH_INTERVAL_MINUTES = 60
 
 # Минимальная задержка перед публикацией новости, чтобы сгруппировать похожие темы
 PUBLISH_DELAY_MINUTES = 30
 
 # Количество новостей для проверки за один раз
-NEWS_CHECK_BATCH = 10
+NEWS_CHECK_BATCH = 20
 
 # База данных для хранения опубликованных новостей
 DATABASE_PATH = 'news_bot.db'
