@@ -90,6 +90,17 @@ class NewsBot:
         has_local_marker = any(marker in text for marker in config.LOCAL_NEWS_MARKERS)
         return has_crime and has_local_marker
 
+    def is_blocked_crime_news(self, news: Dict) -> bool:
+        """Блокирует криминальный контент, кроме глобально значимого и терактов."""
+        text = f"{news.get('title', '')} {news.get('description', '')}".lower()
+
+        has_crime = any(keyword in text for keyword in config.CRIME_CONTENT_KEYWORDS)
+        if not has_crime:
+            return False
+
+        is_allowed_global = any(keyword in text for keyword in config.ALLOWED_GLOBAL_CRIME_KEYWORDS)
+        return not is_allowed_global
+
     def is_low_value_news(self, news: Dict) -> bool:
         """Фильтрует пустые/кликбейтные новости-затычки."""
         title = (news.get('title') or '').strip().lower()
@@ -284,10 +295,14 @@ class NewsBot:
             filtered_news = []
             dropped_local_noise = 0
             dropped_low_value = 0
+            dropped_crime = 0
 
             for news in new_news:
                 if self.is_unwanted_local_news(news):
                     dropped_local_noise += 1
+                    continue
+                if self.is_blocked_crime_news(news):
+                    dropped_crime += 1
                     continue
                 if self.is_low_value_news(news):
                     dropped_low_value += 1
@@ -296,6 +311,8 @@ class NewsBot:
 
             if dropped_local_noise:
                 logger.info(f"Отфильтровано локальных криминальных новостей: {dropped_local_noise}")
+            if dropped_crime:
+                logger.info(f"Отфильтровано криминального контента: {dropped_crime}")
             if dropped_low_value:
                 logger.info(f"Отфильтровано новостей-затычек: {dropped_low_value}")
 
