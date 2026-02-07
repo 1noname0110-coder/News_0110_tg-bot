@@ -80,6 +80,10 @@ class NewsBot:
         has_local_marker = any(marker in text for marker in config.LOCAL_NEWS_MARKERS)
         return has_crime and has_local_marker
 
+    def is_political_news(self, news: Dict) -> bool:
+        text = f"{news.get('title', '')} {news.get('description', '')}".lower()
+        return any(keyword in text for keyword in config.POLITICAL_KEYWORDS)
+
     def is_blocked_crime_news(self, news: Dict) -> bool:
         """Блокирует криминальный контент, кроме глобально значимого и терактов."""
         text = f"{news.get('title', '')} {news.get('description', '')}".lower()
@@ -300,9 +304,15 @@ class NewsBot:
             dropped_local_noise = 0
             dropped_low_value = 0
             dropped_crime = 0
+            dropped_non_political = 0
             skipped_duplicates = 0
+            skipped_content_duplicates = 0
+            seen_content_hashes = set()
 
             for news in new_news:
+                if not self.is_political_news(news):
+                    dropped_non_political += 1
+                    continue
                 if self.is_unwanted_local_news(news):
                     dropped_local_noise += 1
                     continue
@@ -321,8 +331,19 @@ class NewsBot:
                 ):
                     skipped_duplicates += 1
                     continue
+                content_hash = self.database.generate_content_hash(
+                    news.get('title', ''),
+                    news.get('description', '')
+                )
+                if content_hash and content_hash in seen_content_hashes:
+                    skipped_content_duplicates += 1
+                    continue
+                if content_hash:
+                    seen_content_hashes.add(content_hash)
                 filtered_news.append(news)
 
+            if dropped_non_political:
+                logger.info(f"Отфильтровано неполитических новостей: {dropped_non_political}")
             if dropped_local_noise:
                 logger.info(f"Отфильтровано локальных криминальных новостей: {dropped_local_noise}")
             if dropped_crime:
@@ -331,6 +352,8 @@ class NewsBot:
                 logger.info(f"Отфильтровано новостей-затычек: {dropped_low_value}")
             if skipped_duplicates:
                 logger.info(f"Пропущено дубликатов в пакете: {skipped_duplicates}")
+            if skipped_content_duplicates:
+                logger.info(f"Пропущено дубликатов по содержанию: {skipped_content_duplicates}")
 
             grouped_news = self.group_news_by_url(filtered_news)
             self.add_to_pending(grouped_news)
@@ -367,7 +390,8 @@ class NewsBot:
                             url=item['url'],
                             source=item_sources[0] if item_sources else 'Unknown',
                             category=category,
-                            published_at=item.get('published_at', news['published_at'])
+                            published_at=item.get('published_at', news['published_at']),
+                            description=item.get('description', news.get('description', ''))
                         )
                     normalized_url = self.database.normalize_url(item['url'])
                     published_urls.add(normalized_url)

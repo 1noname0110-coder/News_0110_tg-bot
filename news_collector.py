@@ -196,7 +196,12 @@ class NewsCollector:
         
         for news in all_news:
             # Проверяем, была ли новость уже опубликована
-            if not database.is_news_published(news['title'], news['url'], news['source']):
+            if not database.is_news_published(
+                news['title'],
+                news['url'],
+                news['source'],
+                news.get('description', '')
+            ):
                 new_news.append(news)
         
         logger.info(f"Новых новостей для публикации: {len(new_news)}")
