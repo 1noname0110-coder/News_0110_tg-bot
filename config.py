@@ -34,7 +34,7 @@ PUBLISH_DELAY_MINUTES = 30
 CHECK_INTERVAL_SECONDS = 60
 
 # Количество новостей для проверки за один раз
-NEWS_CHECK_BATCH = 10
+NEWS_CHECK_BATCH = 20
 
 # База данных для хранения опубликованных новостей
 DATABASE_PATH = 'news_bot.db'
