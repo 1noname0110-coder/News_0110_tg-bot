@@ -42,10 +42,17 @@ class NewsDatabase:
                 source TEXT NOT NULL,
                 url TEXT NOT NULL,
                 category TEXT NOT NULL,
+                content_hash TEXT,
                 published_at TIMESTAMP NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+        # Обновляем схему базы данных при необходимости
+        cursor.execute("PRAGMA table_info(news)")
+        existing_columns = {row[1] for row in cursor.fetchall()}
+        if 'content_hash' not in existing_columns:
+            cursor.execute('ALTER TABLE news ADD COLUMN content_hash TEXT')
         
         # Создаем таблицу для хранения связанных постов (для дополняющих постов)
         cursor.execute('''
@@ -64,6 +71,7 @@ class NewsDatabase:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_news_published_at ON news(published_at)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_news_category ON news(category)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_news_url ON news(url)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_news_content_hash ON news(content_hash)')
         
         conn.commit()
         conn.close()
@@ -84,6 +92,36 @@ class NewsDatabase:
         # Составляем строку для хеширования
         hash_string = f"{source}|{url}|{title.lower().strip()}"
         return hashlib.md5(hash_string.encode('utf-8')).hexdigest()
+
+    def normalize_content(self, title: str, description: str) -> str:
+        """
+        Нормализует содержимое новости для сравнения по смыслу.
+
+        Args:
+            title: Заголовок новости
+            description: Описание новости
+
+        Returns:
+            Нормализованный текст
+        """
+        text = f"{title} {description}".lower().strip()
+        text = re.sub(r'[^\w\s]', ' ', text)
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip()
+
+    def generate_content_hash(self, title: str, description: str) -> str:
+        """
+        Генерирует хеш на основе содержания новости (заголовок + описание).
+
+        Args:
+            title: Заголовок новости
+            description: Описание новости
+
+        Returns:
+            MD5 хеш нормализованного текста
+        """
+        normalized = self.normalize_content(title, description)
+        return hashlib.md5(normalized.encode('utf-8')).hexdigest() if normalized else ''
     
     def normalize_title(self, title: str) -> str:
         """
@@ -140,7 +178,7 @@ class NewsDatabase:
         
         return normalized
     
-    def is_news_published(self, title: str, url: str, source: str) -> bool:
+    def is_news_published(self, title: str, url: str, source: str, description: str = '') -> bool:
         """
         Проверяет, была ли новость уже опубликована.
         Проверяет как точное совпадение (хеш), так и похожие заголовки/URL из разных категорий.
@@ -185,6 +223,15 @@ class NewsDatabase:
                     conn.close()
                     return True
         
+        # Проверяем похожий контент независимо от категории
+        content_hash = self.generate_content_hash(title, description)
+        if content_hash:
+            cursor.execute('SELECT id FROM news WHERE content_hash = ?', (content_hash,))
+            result = cursor.fetchone()
+            if result:
+                conn.close()
+                return True
+
         # Проверяем похожие заголовки независимо от категории
         # Нормализуем текущий заголовок
         normalized_title = self.normalize_title(title)
@@ -261,7 +308,8 @@ class NewsDatabase:
         # Возвращаем все категории, которые могут подходить
         return list(set(published_categories))
     
-    def save_news(self, title: str, url: str, source: str, category: str, published_at: datetime) -> int:
+    def save_news(self, title: str, url: str, source: str, category: str, published_at: datetime,
+                  description: str = '') -> int:
         """
         Сохраняет информацию о опубликованной новости в базе данных.
         
@@ -276,14 +324,15 @@ class NewsDatabase:
             ID сохраненной записи в базе данных
         """
         news_hash = self.generate_hash(title, url, source)
+        content_hash = self.generate_content_hash(title, description)
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
         try:
             cursor.execute('''
-                INSERT INTO news (news_hash, title, source, url, category, published_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (news_hash, title, url, source, category, published_at))
+                INSERT INTO news (news_hash, title, source, url, category, content_hash, published_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (news_hash, title, source, url, category, content_hash, published_at))
             news_id = cursor.lastrowid
             conn.commit()
             return news_id
