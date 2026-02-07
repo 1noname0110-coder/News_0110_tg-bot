@@ -35,7 +35,6 @@ class NewsBot:
         self.database = NewsDatabase(config.DATABASE_PATH)
         self.news_collector = NewsCollector(config.NEWS_SOURCES)
         self.post_generator = PostGenerator(config.MAX_POST_LENGTH)
-        self.last_publish_time_by_category = {category: None for category in config.CATEGORIES}
         self.pending_news: Dict[str, Dict] = {}
 
         logger.info("Бот инициализирован")
@@ -44,8 +43,6 @@ class NewsBot:
         """Публикует новость в канал Telegram."""
         try:
             post_text = self.post_generator.format_post(news, related_news)
-            categories = news.get('categories', news.get('category', 'general'))
-            post_text = self.post_generator.add_category_tag(post_text, categories)
 
             try:
                 await self.bot.send_message(
@@ -68,13 +65,6 @@ class NewsBot:
         except Exception as e:
             logger.error(f"Ошибка при публикации новости '{news['title']}': {str(e)}")
             return False
-
-    def should_publish_category(self, category: str) -> bool:
-        last_time = self.last_publish_time_by_category.get(category)
-        if last_time is None:
-            return True
-        time_diff = (datetime.now() - last_time).total_seconds() / 60
-        return time_diff >= config.MIN_INTERVAL_BETWEEN_SAME_CATEGORY
 
     def _title_tokens(self, text: str) -> set:
         words = re.findall(r"[а-яa-zё0-9]{4,}", text.lower())
@@ -177,25 +167,39 @@ class NewsBot:
 
         return grouped
 
+    def _merge_into_existing(self, target: Dict, incoming: Dict) -> None:
+        """Объединяет данные новости в существующую запись."""
+        for category in incoming.get('categories', []):
+            if category not in target['categories']:
+                target['categories'].append(category)
+        for source in incoming.get('sources', []):
+            if source not in target['sources']:
+                target['sources'].append(source)
+        for image_url in incoming.get('images', []):
+            if image_url not in target['images']:
+                target['images'].append(image_url)
+        if len(incoming.get('description', '')) > len(target.get('description', '')):
+            target['description'] = incoming['description']
+        target['combined_items'].extend(incoming.get('combined_items', []))
+
     def add_to_pending(self, grouped_news: Dict[str, Dict]):
         for normalized_url, news in grouped_news.items():
             existing = self.pending_news.get(normalized_url)
             if not existing:
+                similar_target = None
+                for pending in self.pending_news.values():
+                    if self._similarity(news, pending) >= 0.5:
+                        similar_target = pending
+                        break
+
+                if similar_target:
+                    self._merge_into_existing(similar_target, news)
+                    continue
+
                 self.pending_news[normalized_url] = news
                 continue
 
-            for category in news['categories']:
-                if category not in existing['categories']:
-                    existing['categories'].append(category)
-            for source in news['sources']:
-                if source not in existing['sources']:
-                    existing['sources'].append(source)
-            for image_url in news.get('images', []):
-                if image_url not in existing['images']:
-                    existing['images'].append(image_url)
-            if len(news.get('description', '')) > len(existing.get('description', '')):
-                existing['description'] = news['description']
-            existing['combined_items'].extend(news.get('combined_items', []))
+            self._merge_into_existing(existing, news)
 
     def _is_ready_for_publish(self, news: Dict, now: datetime) -> bool:
         first_seen = news.get('first_seen_at', now)
@@ -296,6 +300,7 @@ class NewsBot:
             dropped_local_noise = 0
             dropped_low_value = 0
             dropped_crime = 0
+            skipped_duplicates = 0
 
             for news in new_news:
                 if self.is_unwanted_local_news(news):
@@ -307,6 +312,15 @@ class NewsBot:
                 if self.is_low_value_news(news):
                     dropped_low_value += 1
                     continue
+                normalized_title = self.database.normalize_title(news['title'])
+                normalized_url = self.database.normalize_url(news['url'])
+                if any(
+                    normalized_title == self.database.normalize_title(item['title'])
+                    or normalized_url == self.database.normalize_url(item['url'])
+                    for item in filtered_news
+                ):
+                    skipped_duplicates += 1
+                    continue
                 filtered_news.append(news)
 
             if dropped_local_noise:
@@ -315,6 +329,8 @@ class NewsBot:
                 logger.info(f"Отфильтровано криминального контента: {dropped_crime}")
             if dropped_low_value:
                 logger.info(f"Отфильтровано новостей-затычек: {dropped_low_value}")
+            if skipped_duplicates:
+                logger.info(f"Пропущено дубликатов в пакете: {skipped_duplicates}")
 
             grouped_news = self.group_news_by_url(filtered_news)
             self.add_to_pending(grouped_news)
@@ -337,10 +353,6 @@ class NewsBot:
             published_urls = set()
 
             for news in publish_queue:
-                can_publish = any(self.should_publish_category(cat) for cat in news.get('categories', []))
-                if not can_publish:
-                    continue
-
                 related_news = self._find_related_news(news)
                 success = await self.publish_news(news, related_news)
                 if not success:
@@ -360,9 +372,6 @@ class NewsBot:
                     normalized_url = self.database.normalize_url(item['url'])
                     published_urls.add(normalized_url)
 
-                for category in news.get('categories', []):
-                    self.last_publish_time_by_category[category] = datetime.now()
-
                 published_count += 1
                 await asyncio.sleep(5)
 
@@ -379,7 +388,7 @@ class NewsBot:
 
         while True:
             try:
-                await asyncio.sleep(config.PUBLISH_INTERVAL_MINUTES * 60)
+                await asyncio.sleep(config.CHECK_INTERVAL_SECONDS)
                 await self.process_and_publish_news()
             except KeyboardInterrupt:
                 logger.info("Получен сигнал остановки, завершение работы...")
