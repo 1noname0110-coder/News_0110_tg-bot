@@ -149,12 +149,7 @@ class PostGenerator:
         for extra_url in news.get('alternate_urls', [])[:3]:
             post_parts.append(f"🔗 [Дополнительный источник]({extra_url})")
 
-        image_urls = news.get('images', [])
-        if image_urls:
-            post_parts.append("")
-            post_parts.append("🖼 Изображения по теме:")
-            for image_url in image_urls[:3]:
-                post_parts.append(f"• {image_url}")
+        # Изображения отправляются как вложения в Telegram, ссылки не добавляем в текст поста.
         
         # Если есть связанная новость, добавляем ссылку на неё
         if related_news and not news.get('is_merged_topic'):
@@ -200,6 +195,9 @@ class PostGenerator:
             'general': '📰',
             'politics': '🏛️',
             'world': '🌍',
+            'мир': '🌍',
+            'россия': '🇷🇺',
+            'экономика': '💹',
             'tech': '💻',
             'cars': '🚗'
         }
