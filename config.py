@@ -31,7 +31,7 @@ MAX_POST_LENGTH = 4500
 PUBLISH_DELAY_MINUTES = 30
 
 # Интервал проверки источников (в секундах)
-CHECK_INTERVAL_SECONDS = 60
+CHECK_INTERVAL_SECONDS = 300
 
 # Количество новостей для проверки за один раз
 NEWS_CHECK_BATCH = 20
@@ -47,14 +47,9 @@ DAYS_TO_KEEP_HISTORY = 30
 # Оставляем только политические и мировые новости
 NEWS_SOURCES = [
     {'name': 'Коммерсант Политика', 'url': 'https://www.kommersant.ru/RSS/section-politics.xml', 'category': 'politics'},
-    {'name': 'RT Политика', 'url': 'https://russian.rt.com/rss/politics', 'category': 'politics'},
     {'name': 'Независимая газета', 'url': 'https://www.ng.ru/rss/', 'category': 'politics'},
-    {'name': 'Известия', 'url': 'https://iz.ru/xml/rss/all.xml', 'category': 'politics'},
     {'name': 'ТАСС Мир', 'url': 'https://tass.ru/rss/v2.xml', 'category': 'world'},
-    {'name': 'RT Мир', 'url': 'https://russian.rt.com/rss/news', 'category': 'world'},
     {'name': 'BBC Russian', 'url': 'https://www.bbc.com/russian/index.xml', 'category': 'world'},
-    {'name': 'Deutsche Welle Russian', 'url': 'https://www.dw.com/ru/rss/rss-ru-all', 'category': 'world'},
-    {'name': 'Voice of America Russian', 'url': 'https://www.golosameriki.com/api/zq$omekvi_1q', 'category': 'world'},
     {'name': 'Российская Газета Мир', 'url': 'https://rg.ru/xml/index.xml', 'category': 'world'},
 ]
 
