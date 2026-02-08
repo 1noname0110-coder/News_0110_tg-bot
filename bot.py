@@ -43,6 +43,8 @@ class NewsBot:
         """Публикует новость в канал Telegram."""
         try:
             post_text = self.post_generator.format_post(news, related_news)
+            categories = news.get('categories') or [news.get('category', 'general')]
+            post_text = self.post_generator.add_category_tag(post_text, categories)
 
             try:
                 await self.bot.send_message(
@@ -82,7 +84,30 @@ class NewsBot:
 
     def is_political_news(self, news: Dict) -> bool:
         text = f"{news.get('title', '')} {news.get('description', '')}".lower()
-        return any(keyword in text for keyword in config.POLITICAL_KEYWORDS)
+        return any(keyword in text for keyword in config.WORLD_KEYWORDS)
+
+    def _detect_categories(self, news: Dict) -> List[str]:
+        text = f"{news.get('title', '')} {news.get('description', '')}".lower()
+        categories: List[str] = []
+
+        if any(keyword in text for keyword in config.WORLD_KEYWORDS):
+            categories.append('мир')
+        if any(keyword in text for keyword in config.RUSSIA_KEYWORDS):
+            categories.append('россия')
+        if any(keyword in text for keyword in config.ECONOMY_KEYWORDS):
+            categories.append('экономика')
+
+        source_category = news.get('category')
+        if source_category and source_category not in categories:
+            categories.append(source_category)
+
+        return categories
+
+    def is_excluded_russian_topic(self, news: Dict) -> bool:
+        if news.get('source') not in config.EXCLUDED_RUSSIAN_SOURCES:
+            return False
+        text = f"{news.get('title', '')} {news.get('description', '')}".lower()
+        return any(keyword in text for keyword in config.EXCLUDED_RUSSIAN_TOPICS_KEYWORDS)
 
     def is_blocked_crime_news(self, news: Dict) -> bool:
         """Блокирует криминальный контент, кроме глобально значимого и терактов."""
@@ -141,6 +166,7 @@ class NewsBot:
         now = datetime.now()
 
         for news in news_list:
+            categories = news.get('categories') or [news.get('category', 'general')]
             normalized_url = self.database.normalize_url(news['url'])
             if normalized_url not in grouped:
                 grouped[normalized_url] = {
@@ -148,7 +174,7 @@ class NewsBot:
                     'url': news['url'],
                     'description': news.get('description', ''),
                     'source': news['source'],
-                    'categories': [news['category']],
+                    'categories': list(dict.fromkeys(categories)),
                     'sources': [news['source']],
                     'images': news.get('images', []),
                     'published_at': news['published_at'],
@@ -156,8 +182,9 @@ class NewsBot:
                     'combined_items': [news]
                 }
             else:
-                if news['category'] not in grouped[normalized_url]['categories']:
-                    grouped[normalized_url]['categories'].append(news['category'])
+                for category in categories:
+                    if category not in grouped[normalized_url]['categories']:
+                        grouped[normalized_url]['categories'].append(category)
                 if news['source'] not in grouped[normalized_url]['sources']:
                     grouped[normalized_url]['sources'].append(news['source'])
                 for image_url in news.get('images', []):
@@ -310,9 +337,15 @@ class NewsBot:
             seen_content_hashes = set()
 
             for news in new_news:
-                if not self.is_political_news(news):
+                if self.is_excluded_russian_topic(news):
                     dropped_non_political += 1
                     continue
+                categories = self._detect_categories(news)
+                if not categories:
+                    dropped_non_political += 1
+                    continue
+                news['categories'] = categories
+                news['category'] = categories[0]
                 if self.is_unwanted_local_news(news):
                     dropped_local_noise += 1
                     continue
@@ -343,7 +376,7 @@ class NewsBot:
                 filtered_news.append(news)
 
             if dropped_non_political:
-                logger.info(f"Отфильтровано неполитических новостей: {dropped_non_political}")
+                logger.info(f"Отфильтровано нерелевантных новостей: {dropped_non_political}")
             if dropped_local_noise:
                 logger.info(f"Отфильтровано локальных криминальных новостей: {dropped_local_noise}")
             if dropped_crime:
