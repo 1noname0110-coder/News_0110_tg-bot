@@ -36,7 +36,6 @@ class NewsBot:
         self.news_collector = NewsCollector(config.NEWS_SOURCES)
         self.post_generator = PostGenerator(config.MAX_POST_LENGTH)
         self.pending_news: Dict[str, Dict] = {}
-        self.currency_fetcher = CurrencyFetcher()
         self.msk_tz = timezone(timedelta(hours=3))
 
         logger.info("Бот инициализирован")
@@ -459,6 +458,11 @@ class NewsBot:
         except Exception as e:
             logger.error(f"Ошибка при обработке новостей: {str(e)}", exc_info=True)
 
+    def _to_msk(self, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=self.msk_tz)
+        return value.astimezone(self.msk_tz)
+
     def _digest_bucket_label(self, topic: str, region: str) -> str:
         if topic == 'экономика' and region == 'рф':
             return 'Экономическая ситуация • РФ'
@@ -498,7 +502,7 @@ class NewsBot:
             filtered_news = [
                 news for news in new_news
                 if self._filter_news_for_digest(news)
-                and news.get('published_at', now_msk) >= lookback_boundary
+                and self._to_msk(news.get('published_at', now_msk)) >= lookback_boundary
             ]
 
             buckets: Dict[str, List[Dict]] = {
@@ -519,13 +523,32 @@ class NewsBot:
                 items.sort(key=lambda x: x['published_at'], reverse=True)
                 buckets[bucket_key] = items[:config.DIGEST_MAX_ITEMS]
 
+            used_urls = set()
+            used_hashes = set()
             for bucket_key, items in buckets.items():
                 topic, region = bucket_key.split('_', maxsplit=1)
                 heading = self._digest_bucket_label(topic, region)
-                post_text = self.post_generator.format_digest_post(heading, items, now_msk)
+                unique_items = []
+                for item in items:
+                    normalized_url = self.database.normalize_url(item.get('url', ''))
+                    content_hash = self.database.generate_content_hash(
+                        item.get('title', ''),
+                        item.get('description', '')
+                    )
+                    if normalized_url and normalized_url in used_urls:
+                        continue
+                    if content_hash and content_hash in used_hashes:
+                        continue
+                    if normalized_url:
+                        used_urls.add(normalized_url)
+                    if content_hash:
+                        used_hashes.add(content_hash)
+                    unique_items.append(item)
+
+                post_text = self.post_generator.format_digest_post(heading, unique_items, now_msk)
                 await self._send_message(post_text)
 
-                for item in items:
+                for item in unique_items:
                     self.database.save_news(
                         title=item['title'],
                         url=item['url'],
@@ -535,37 +558,6 @@ class NewsBot:
                         description=item.get('description', '')
                     )
                 await asyncio.sleep(5)
-
-            rates = await self.currency_fetcher.fetch_rates()
-            rate_lines = []
-
-            usd_per_rub = rates.get("usd_per_rub")
-            eur_per_rub = rates.get("eur_per_rub")
-            cny_per_rub = rates.get("cny_per_rub")
-            btc_usd = rates.get("btc_usd")
-            btc_rub = rates.get("btc_rub")
-
-            if usd_per_rub:
-                rate_lines.append(f"$1 = {1 / usd_per_rub:,.2f} ₽".replace(",", " "))
-                rate_lines.append(f"₽1 = {usd_per_rub:.4f} $")
-            if eur_per_rub:
-                rate_lines.append(f"€1 = {1 / eur_per_rub:,.2f} ₽".replace(",", " "))
-            if cny_per_rub:
-                rate_lines.append(f"¥1 = {1 / cny_per_rub:,.2f} ₽".replace(",", " "))
-            if btc_usd:
-                btc_line = f"₿1 = {btc_usd:,.0f} $".replace(",", " ")
-                if btc_rub:
-                    btc_line += f" (≈ {btc_rub:,.0f} ₽)".replace(",", " ")
-                rate_lines.append(btc_line)
-
-            if not rate_lines:
-                rate_lines.append("Нет данных от источников.")
-
-            currency_post = self.post_generator.format_currency_post(
-                {"lines": rate_lines},
-                datetime.now(self.msk_tz)
-            )
-            await self._send_message(currency_post)
         except Exception as e:
             logger.error("Ошибка при публикации ежедневной сводки: %s", e, exc_info=True)
 

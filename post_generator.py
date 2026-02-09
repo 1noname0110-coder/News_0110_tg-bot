@@ -224,29 +224,6 @@ class PostGenerator:
 
         return "\n".join(post_parts)
 
-    def format_currency_post(self, rates: Dict, generated_at: Optional[datetime] = None) -> str:
-        """
-        Формирует пост с курсами валют.
-
-        Args:
-            rates: Словарь с курсами валют
-            generated_at: Время получения
-
-        Returns:
-            Текст поста
-        """
-        post_parts = ["*💱 Курс валют*"]
-
-        if generated_at:
-            post_parts.append(f"🕛 {generated_at.strftime('%d.%m.%Y %H:%M')} МСК")
-
-        post_parts.append("")
-
-        for label in rates.get('lines', []):
-            post_parts.append(f"• {label}")
-
-        return "\n".join(post_parts)
-    
     def can_combine_with_related(self, news: Dict, related_news: Dict) -> bool:
         """
         Проверяет, можно ли объединить новость со связанной в один пост.
