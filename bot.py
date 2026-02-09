@@ -9,7 +9,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict
 
-from telegram import Bot
+from telegram import Bot, InputMediaPhoto
 from telegram.constants import ParseMode
 
 import config
