@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 
-from telegram import Bot
+from telegram import Bot, InputMediaPhoto
 from telegram.constants import ParseMode
 
 import config
@@ -45,22 +45,62 @@ class NewsBot:
             post_text = self.post_generator.format_post(news, related_news)
             categories = news.get('categories') or [news.get('category', 'general')]
             post_text = self.post_generator.add_category_tag(post_text, categories)
+            image_urls = news.get('images', [])
 
             try:
-                await self.bot.send_message(
-                    chat_id=self.channel_id,
-                    text=post_text,
-                    parse_mode=ParseMode.MARKDOWN,
-                    disable_web_page_preview=False
-                )
+                if image_urls:
+                    if len(image_urls) == 1:
+                        await self.bot.send_photo(
+                            chat_id=self.channel_id,
+                            photo=image_urls[0],
+                            caption=post_text,
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                    else:
+                        media = []
+                        for idx, image_url in enumerate(image_urls[:3]):
+                            if idx == 0:
+                                media.append(InputMediaPhoto(media=image_url, caption=post_text, parse_mode=ParseMode.MARKDOWN))
+                            else:
+                                media.append(InputMediaPhoto(media=image_url))
+                        await self.bot.send_media_group(
+                            chat_id=self.channel_id,
+                            media=media
+                        )
+                else:
+                    await self.bot.send_message(
+                        chat_id=self.channel_id,
+                        text=post_text,
+                        parse_mode=ParseMode.MARKDOWN,
+                        disable_web_page_preview=False
+                    )
             except Exception as markdown_error:
                 logger.warning(f"Ошибка Markdown форматирования, публикуем без разметки: {str(markdown_error)}")
                 plain_text = post_text.replace('*', '').replace('[', '').replace(']', '').replace('(', '').replace(')', '')
-                await self.bot.send_message(
-                    chat_id=self.channel_id,
-                    text=plain_text,
-                    disable_web_page_preview=False
-                )
+                if image_urls:
+                    if len(image_urls) == 1:
+                        await self.bot.send_photo(
+                            chat_id=self.channel_id,
+                            photo=image_urls[0],
+                            caption=plain_text
+                        )
+                    else:
+                        media = []
+                        for idx, image_url in enumerate(image_urls[:3]):
+                            if idx == 0:
+                                media.append(InputMediaPhoto(media=image_url, caption=plain_text))
+                            else:
+                                media.append(InputMediaPhoto(media=image_url))
+                        await self.bot.send_media_group(
+                            chat_id=self.channel_id,
+                            media=media
+                        )
+                else:
+                    await self.bot.send_message(
+                        chat_id=self.channel_id,
+                        text=plain_text,
+                        disable_web_page_preview=False
+                    )
 
             logger.info(f"Опубликована новость: {news['title'][:80]}...")
             return True
