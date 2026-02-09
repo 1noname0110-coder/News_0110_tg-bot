@@ -170,6 +170,87 @@ class PostGenerator:
             post_text = post_text[:self.max_length - 3] + "..."
         
         return post_text
+
+    def summarize_description(self, description: str, max_length: int = 180) -> str:
+        """
+        Возвращает краткую суть из описания новости.
+
+        Args:
+            description: Описание новости
+            max_length: Максимальная длина краткой сути
+
+        Returns:
+            Короткий фрагмент без «воды»
+        """
+        clean_description = self.clean_text(description)
+        if not clean_description:
+            return ""
+
+        sentence_match = re.split(r'(?<=[.!?])\s+', clean_description)
+        summary = sentence_match[0] if sentence_match else clean_description
+        summary = summary.strip()
+
+        if len(summary) > max_length:
+            summary = summary[:max_length - 1].rstrip() + "…"
+
+        return summary
+
+    def format_digest_post(self, heading: str, items: List[Dict], generated_at: Optional[datetime] = None) -> str:
+        """
+        Формирует ежедневную сводку по выбранной теме.
+
+        Args:
+            heading: Заголовок сводки
+            items: Список новостей
+            generated_at: Время формирования
+
+        Returns:
+            Текст сводки
+        """
+        post_parts = [f"*{heading}*"]
+
+        if generated_at:
+            post_parts.append(f"🕛 {generated_at.strftime('%d.%m.%Y %H:%M')} МСК")
+
+        post_parts.append("")
+
+        if not items:
+            post_parts.append("Сегодня без значимых новостей.")
+            return "\n".join(post_parts)
+
+        for item in items:
+            title = self.clean_text(item.get('title', ''))
+            summary = self.summarize_description(item.get('description', ''))
+            url = item.get('url', '')
+            if summary:
+                post_parts.append(f"• [{title}]({url}) — {summary}")
+            else:
+                post_parts.append(f"• [{title}]({url})")
+
+        return "\n".join(post_parts)
+
+    def format_currency_post(self, rates: Dict, generated_at: Optional[datetime] = None) -> str:
+        """
+        Формирует пост с курсами валют.
+
+        Args:
+            rates: Словарь с курсами валют
+            generated_at: Время получения
+
+        Returns:
+            Текст поста
+        """
+        post_parts = ["*💱 Курс валют*"]
+
+        if generated_at:
+            post_parts.append(f"🕛 {generated_at.strftime('%d.%m.%Y %H:%M')} МСК")
+
+        post_parts.append("")
+
+        for label in rates.get('lines', []):
+            post_parts.append(f"• {label}")
+
+        return "\n".join(post_parts)
     
     def can_combine_with_related(self, news: Dict, related_news: Dict) -> bool:
         """
