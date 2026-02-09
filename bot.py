@@ -1,13 +1,12 @@
 """
 Основной файл телеграм-бота для публикации новостей в канал.
-Бот работает круглосуточно, собирая и публикуя новости из различных источников.
+Бот публикует ежедневные сводки и курсы валют по расписанию.
 """
 
 import asyncio
 import logging
 import re
-import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict
 
 from telegram import Bot
@@ -36,8 +35,28 @@ class NewsBot:
         self.news_collector = NewsCollector(config.NEWS_SOURCES)
         self.post_generator = PostGenerator(config.MAX_POST_LENGTH)
         self.pending_news: Dict[str, Dict] = {}
+        self.msk_tz = timezone(timedelta(hours=3))
 
         logger.info("Бот инициализирован")
+
+    async def _send_message(self, text: str) -> bool:
+        try:
+            await self.bot.send_message(
+                chat_id=self.channel_id,
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                disable_web_page_preview=False
+            )
+            return True
+        except Exception as markdown_error:
+            logger.warning("Ошибка Markdown форматирования, публикуем без разметки: %s", markdown_error)
+            plain_text = text.replace('*', '').replace('[', '').replace(']', '').replace('(', '').replace(')', '')
+            await self.bot.send_message(
+                chat_id=self.channel_id,
+                text=plain_text,
+                disable_web_page_preview=False
+            )
+            return True
 
     async def publish_news(self, news: dict, related_news: Optional[dict] = None) -> bool:
         """Публикует новость в канал Telegram."""
@@ -45,22 +64,7 @@ class NewsBot:
             post_text = self.post_generator.format_post(news, related_news)
             categories = news.get('categories') or [news.get('category', 'general')]
             post_text = self.post_generator.add_category_tag(post_text, categories)
-
-            try:
-                await self.bot.send_message(
-                    chat_id=self.channel_id,
-                    text=post_text,
-                    parse_mode=ParseMode.MARKDOWN,
-                    disable_web_page_preview=False
-                )
-            except Exception as markdown_error:
-                logger.warning(f"Ошибка Markdown форматирования, публикуем без разметки: {str(markdown_error)}")
-                plain_text = post_text.replace('*', '').replace('[', '').replace(']', '').replace('(', '').replace(')', '')
-                await self.bot.send_message(
-                    chat_id=self.channel_id,
-                    text=plain_text,
-                    disable_web_page_preview=False
-                )
+            await self._send_message(post_text)
 
             logger.info(f"Опубликована новость: {news['title'][:80]}...")
             return True
@@ -85,6 +89,20 @@ class NewsBot:
     def is_political_news(self, news: Dict) -> bool:
         text = f"{news.get('title', '')} {news.get('description', '')}".lower()
         return any(keyword in text for keyword in config.WORLD_KEYWORDS)
+
+    def _detect_region(self, news: Dict) -> str:
+        text = f"{news.get('title', '')} {news.get('description', '')}".lower()
+        if any(keyword in text for keyword in config.RUSSIA_KEYWORDS):
+            return 'рф'
+        if any(keyword in text for keyword in config.WORLD_KEYWORDS):
+            return 'мир'
+        return 'мир'
+
+    def _detect_topic(self, news: Dict) -> str:
+        text = f"{news.get('title', '')} {news.get('description', '')}".lower()
+        if any(keyword in text for keyword in config.ECONOMY_KEYWORDS):
+            return 'экономика'
+        return 'политика'
 
     def _detect_categories(self, news: Dict) -> List[str]:
         text = f"{news.get('title', '')} {news.get('description', '')}".lower()
@@ -439,19 +457,135 @@ class NewsBot:
         except Exception as e:
             logger.error(f"Ошибка при обработке новостей: {str(e)}", exc_info=True)
 
+    def _to_msk(self, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=self.msk_tz)
+        return value.astimezone(self.msk_tz)
+
+    def _digest_bucket_label(self, topic: str, region: str) -> str:
+        if topic == 'экономика' and region == 'рф':
+            return 'Экономическая ситуация • РФ'
+        if topic == 'экономика' and region == 'мир':
+            return 'Экономическая ситуация • Мир'
+        if topic == 'политика' and region == 'рф':
+            return 'Политика • РФ'
+        return 'Политика • Мир'
+
+    def _digest_bucket_key(self, topic: str, region: str) -> str:
+        return f"{topic}_{region}"
+
+    def _filter_news_for_digest(self, news: Dict) -> bool:
+        if self.is_excluded_russian_topic(news):
+            return False
+        categories = self._detect_categories(news)
+        if not categories:
+            return False
+        news['categories'] = categories
+        news['category'] = categories[0]
+        if self.is_unwanted_local_news(news):
+            return False
+        if self.is_blocked_crime_news(news):
+            return False
+        if self.is_low_value_news(news):
+            return False
+        return True
+
+    async def publish_daily_digest(self) -> None:
+        try:
+            logger.info("Сбор новостей для ежедневной сводки...")
+            all_news = await self.news_collector.collect_all_news()
+            new_news = self.news_collector.filter_new_news(all_news, self.database)
+
+            now_msk = datetime.now(self.msk_tz)
+            lookback_boundary = now_msk - timedelta(hours=config.DIGEST_LOOKBACK_HOURS)
+            filtered_news = [
+                news for news in new_news
+                if self._filter_news_for_digest(news)
+                and self._to_msk(news.get('published_at', now_msk)) >= lookback_boundary
+            ]
+
+            buckets: Dict[str, List[Dict]] = {
+                self._digest_bucket_key('политика', 'мир'): [],
+                self._digest_bucket_key('политика', 'рф'): [],
+                self._digest_bucket_key('экономика', 'мир'): [],
+                self._digest_bucket_key('экономика', 'рф'): []
+            }
+
+            for news in filtered_news:
+                topic = self._detect_topic(news)
+                region = self._detect_region(news)
+                bucket_key = self._digest_bucket_key(topic, region)
+                if bucket_key in buckets:
+                    buckets[bucket_key].append(news)
+
+            for bucket_key, items in buckets.items():
+                items.sort(key=lambda x: x['published_at'], reverse=True)
+                buckets[bucket_key] = items[:config.DIGEST_MAX_ITEMS]
+
+            used_urls = set()
+            used_hashes = set()
+            for bucket_key, items in buckets.items():
+                topic, region = bucket_key.split('_', maxsplit=1)
+                heading = self._digest_bucket_label(topic, region)
+                unique_items = []
+                for item in items:
+                    normalized_url = self.database.normalize_url(item.get('url', ''))
+                    content_hash = self.database.generate_content_hash(
+                        item.get('title', ''),
+                        item.get('description', '')
+                    )
+                    if normalized_url and normalized_url in used_urls:
+                        continue
+                    if content_hash and content_hash in used_hashes:
+                        continue
+                    if normalized_url:
+                        used_urls.add(normalized_url)
+                    if content_hash:
+                        used_hashes.add(content_hash)
+                    unique_items.append(item)
+
+                post_text = self.post_generator.format_digest_post(heading, unique_items, now_msk)
+                await self._send_message(post_text)
+
+                for item in unique_items:
+                    self.database.save_news(
+                        title=item['title'],
+                        url=item['url'],
+                        source=item['source'],
+                        category=bucket_key,
+                        published_at=item.get('published_at', now_msk),
+                        description=item.get('description', '')
+                    )
+                await asyncio.sleep(5)
+        except Exception as e:
+            logger.error("Ошибка при публикации ежедневной сводки: %s", e, exc_info=True)
+
+    def _seconds_until_next_digest(self) -> float:
+        now = datetime.now(self.msk_tz)
+        target = now.replace(
+            hour=config.DIGEST_PUBLISH_HOUR_MSK,
+            minute=config.DIGEST_PUBLISH_MINUTE_MSK,
+            second=0,
+            microsecond=0
+        )
+        if now >= target:
+            target += timedelta(days=1)
+        return (target - now).total_seconds()
+
     async def run_continuously(self):
-        logger.info("Бот запущен и работает 24/7...")
-        await self.process_and_publish_news()
+        logger.info("Бот запущен. Публикация сводок по расписанию МСК.")
 
         while True:
             try:
-                await asyncio.sleep(config.CHECK_INTERVAL_SECONDS)
-                await self.process_and_publish_news()
+                sleep_seconds = self._seconds_until_next_digest()
+                logger.info("Ожидание до следующей сводки: %.0f секунд", sleep_seconds)
+                await asyncio.sleep(sleep_seconds)
+                await self.publish_daily_digest()
             except KeyboardInterrupt:
                 logger.info("Получен сигнал остановки, завершение работы...")
                 break
             except Exception as e:
-                logger.error(f"Ошибка в основном цикле: {str(e)}", exc_info=True)
+                logger.error("Ошибка в основном цикле: %s", e, exc_info=True)
                 await asyncio.sleep(60)
 
 

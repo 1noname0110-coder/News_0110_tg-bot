@@ -33,6 +33,16 @@ PUBLISH_DELAY_MINUTES = 30
 # Интервал проверки источников (в секундах)
 CHECK_INTERVAL_SECONDS = 300
 
+# Время публикации ежедневной сводки (МСК)
+DIGEST_PUBLISH_HOUR_MSK = 12
+DIGEST_PUBLISH_MINUTE_MSK = 0
+
+# Сколько часов назад брать новости для ежедневной сводки
+DIGEST_LOOKBACK_HOURS = 24
+
+# Максимум новостей в одном ежедневном посте
+DIGEST_MAX_ITEMS = 5
+
 # Количество новостей для проверки за один раз
 NEWS_CHECK_BATCH = 20
 
