@@ -91,36 +91,83 @@ class NewsBot:
         text = f"{news.get('title', '')} {news.get('description', '')}".lower()
         return any(keyword in text for keyword in config.WORLD_KEYWORDS)
 
+    def _news_text(self, news: Dict) -> str:
+        return f"{news.get('title', '')} {news.get('description', '')}".lower()
+
+    def _keyword_score(self, text: str, keywords: List[str]) -> int:
+        return sum(1 for keyword in keywords if keyword in text)
+
     def _detect_region(self, news: Dict) -> str:
-        text = f"{news.get('title', '')} {news.get('description', '')}".lower()
-        if any(keyword in text for keyword in config.RUSSIA_KEYWORDS):
+        text = self._news_text(news)
+        russia_score = self._keyword_score(text, config.RUSSIA_KEYWORDS)
+        world_score = self._keyword_score(text, config.WORLD_KEYWORDS)
+
+        if russia_score > world_score:
             return 'рф'
-        if any(keyword in text for keyword in config.WORLD_KEYWORDS):
+        if world_score > 0:
             return 'мир'
+
+        source_category = str(news.get('category', '')).lower()
+        if source_category in {'россия', 'рф'}:
+            return 'рф'
         return 'мир'
 
+    def _is_armed_conflict_news(self, news: Dict) -> bool:
+        text = self._news_text(news)
+        conflict_score = self._keyword_score(text, config.ARMED_CONFLICT_KEYWORDS)
+        if conflict_score == 0:
+            return False
+        has_noise = any(keyword in text for keyword in config.NON_CONFLICT_NOISE_KEYWORDS)
+        return not has_noise
+
+    def _is_economy_news(self, news: Dict) -> bool:
+        text = self._news_text(news)
+        economy_score = self._keyword_score(text, config.ECONOMY_KEYWORDS)
+        if economy_score == 0:
+            return False
+
+        social_score = self._keyword_score(text, config.NON_ECONOMIC_SOCIAL_KEYWORDS)
+        return economy_score > social_score
+
+    def _is_society_news(self, news: Dict) -> bool:
+        text = self._news_text(news)
+        society_score = self._keyword_score(text, config.SOCIETY_KEYWORDS)
+        politics_score = self._keyword_score(text, config.POLITICS_KEYWORDS)
+        return society_score > 0 and society_score >= politics_score
+
+    def _is_politics_news(self, news: Dict) -> bool:
+        text = self._news_text(news)
+        politics_score = self._keyword_score(text, config.POLITICS_KEYWORDS)
+        return politics_score > 0
+
     def _detect_topic(self, news: Dict) -> str:
-        text = f"{news.get('title', '')} {news.get('description', '')}".lower()
-        if any(keyword in text for keyword in config.ECONOMY_KEYWORDS):
+        if self._is_armed_conflict_news(news):
+            return 'конфликт'
+        if self._is_economy_news(news):
             return 'экономика'
-        return 'политика'
+        if self._is_society_news(news):
+            return 'общество'
+        if self._is_politics_news(news):
+            return 'политика'
+        return 'неопределено'
 
     def _detect_categories(self, news: Dict) -> List[str]:
-        text = f"{news.get('title', '')} {news.get('description', '')}".lower()
-        categories: List[str] = []
+        topic = self._detect_topic(news)
+        if topic == 'неопределено':
+            return []
 
-        if any(keyword in text for keyword in config.WORLD_KEYWORDS):
-            categories.append('мир')
-        if any(keyword in text for keyword in config.RUSSIA_KEYWORDS):
-            categories.append('россия')
-        if any(keyword in text for keyword in config.ECONOMY_KEYWORDS):
-            categories.append('экономика')
+        region = self._detect_region(news)
 
-        source_category = news.get('category')
-        if source_category and source_category not in categories:
-            categories.append(source_category)
+        if topic == 'конфликт':
+            return ['вооружённые конфликты рф' if region == 'рф' else 'вооружённые конфликты мир']
+        if topic == 'экономика':
+            return ['экономика рф' if region == 'рф' else 'мир']
+        if topic == 'политика':
+            return ['политика рф' if region == 'рф' else 'политика мир']
+        if topic == 'общество':
+            return ['общество рф' if region == 'рф' else 'мир']
 
-        return categories
+        return []
 
     def is_excluded_russian_topic(self, news: Dict) -> bool:
         if news.get('source') not in config.EXCLUDED_RUSSIAN_SOURCES:
@@ -464,13 +511,19 @@ class NewsBot:
         return value.astimezone(self.msk_tz)
 
     def _digest_bucket_label(self, topic: str, region: str) -> str:
+        if topic == 'конфликт' and region == 'рф':
+            return 'Вооружённые конфликты • РФ'
+        if topic == 'конфликт' and region == 'мир':
+            return 'Вооружённые конфликты • Мир'
         if topic == 'экономика' and region == 'рф':
             return 'Экономическая ситуация • РФ'
-        if topic == 'экономика' and region == 'мир':
-            return 'Экономическая ситуация • Мир'
         if topic == 'политика' and region == 'рф':
             return 'Политика • РФ'
-        return 'Политика • Мир'
+        if topic == 'общество' and region == 'рф':
+            return 'Общество • РФ'
+        if topic == 'политика' and region == 'мир':
+            return 'Политика • Мир'
+        return 'Мир'
 
     def _digest_bucket_key(self, topic: str, region: str) -> str:
         return f"{topic}_{region}"
@@ -506,16 +559,24 @@ class NewsBot:
             ]
 
             buckets: Dict[str, List[Dict]] = {
-                self._digest_bucket_key('политика', 'мир'): [],
+                self._digest_bucket_key('конфликт', 'мир'): [],
+                self._digest_bucket_key('конфликт', 'рф'): [],
+                self._digest_bucket_key('экономика', 'рф'): [],
                 self._digest_bucket_key('политика', 'рф'): [],
-                self._digest_bucket_key('экономика', 'мир'): [],
-                self._digest_bucket_key('экономика', 'рф'): []
+                self._digest_bucket_key('политика', 'мир'): [],
+                self._digest_bucket_key('общество', 'рф'): [],
+                self._digest_bucket_key('мир', 'мир'): []
             }
 
             for news in filtered_news:
                 topic = self._detect_topic(news)
+                if topic == 'неопределено':
+                    continue
                 region = self._detect_region(news)
-                bucket_key = self._digest_bucket_key(topic, region)
+                if region == 'мир' and topic in {'экономика', 'общество'}:
+                    bucket_key = self._digest_bucket_key('мир', 'мир')
+                else:
+                    bucket_key = self._digest_bucket_key(topic, region)
                 if bucket_key in buckets:
                     buckets[bucket_key].append(news)
 
