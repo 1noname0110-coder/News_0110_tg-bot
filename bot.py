@@ -582,10 +582,11 @@ class NewsBot:
 
             for bucket_key, items in buckets.items():
                 items.sort(key=lambda x: x['published_at'], reverse=True)
-                buckets[bucket_key] = items[:config.DIGEST_MAX_ITEMS]
 
             used_urls = set()
             used_hashes = set()
+            second_wave_posts = []
+
             for bucket_key, items in buckets.items():
                 topic, region = bucket_key.split('_', maxsplit=1)
                 heading = self._digest_bucket_label(topic, region)
@@ -606,10 +607,13 @@ class NewsBot:
                         used_hashes.add(content_hash)
                     unique_items.append(item)
 
-                post_text = self.post_generator.format_digest_post(heading, unique_items, now_msk)
+                first_wave_items = unique_items[:config.DIGEST_MAX_ITEMS]
+                overflow_items = unique_items[config.DIGEST_MAX_ITEMS:]
+
+                post_text = self.post_generator.format_digest_post(heading, first_wave_items, now_msk)
                 await self._send_message(post_text)
 
-                for item in unique_items:
+                for item in first_wave_items:
                     self.database.save_news(
                         title=item['title'],
                         url=item['url'],
@@ -618,7 +622,37 @@ class NewsBot:
                         published_at=item.get('published_at', now_msk),
                         description=item.get('description', '')
                     )
+
+                if overflow_items:
+                    second_wave_posts.append((bucket_key, heading, overflow_items))
+
                 await asyncio.sleep(5)
+
+            if second_wave_posts:
+                delay_minutes = config.DIGEST_SECOND_WAVE_DELAY_MINUTES
+                logger.info(
+                    "Запланирована вторая волна сводки через %d минут для %d рубрик",
+                    delay_minutes,
+                    len(second_wave_posts)
+                )
+                await asyncio.sleep(delay_minutes * 60)
+
+                for bucket_key, heading, overflow_items in second_wave_posts:
+                    second_wave_heading = f"{heading} (вторая волна)"
+                    second_wave_text = self.post_generator.format_digest_post(second_wave_heading, overflow_items, now_msk)
+                    await self._send_message(second_wave_text)
+
+                    for item in overflow_items:
+                        self.database.save_news(
+                            title=item['title'],
+                            url=item['url'],
+                            source=item['source'],
+                            category=bucket_key,
+                            published_at=item.get('published_at', now_msk),
+                            description=item.get('description', '')
+                        )
+
+                    await asyncio.sleep(5)
         except Exception as e:
             logger.error("Ошибка при публикации ежедневной сводки: %s", e, exc_info=True)
 
