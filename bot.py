@@ -621,7 +621,10 @@ class NewsBot:
                 if topic == 'неопределено':
                     continue
                 region = self._detect_region(news)
-                bucket_key = self._digest_bucket_key(topic, region)
+                if region == 'мир' and topic in {'экономика', 'общество'}:
+                    bucket_key = self._digest_bucket_key('мир', 'мир')
+                else:
+                    bucket_key = self._digest_bucket_key(topic, region)
                 if bucket_key in buckets:
                     buckets[bucket_key].append(news)
 
