@@ -6,6 +6,7 @@
 import asyncio
 import logging
 import re
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict
 
@@ -91,36 +92,114 @@ class NewsBot:
         text = f"{news.get('title', '')} {news.get('description', '')}".lower()
         return any(keyword in text for keyword in config.WORLD_KEYWORDS)
 
+    def _news_text(self, news: Dict) -> str:
+        return f"{news.get('title', '')} {news.get('description', '')}".lower()
+
+    def _keyword_score(self, text: str, keywords: List[str]) -> int:
+        return sum(1 for keyword in keywords if keyword in text)
+
     def _detect_region(self, news: Dict) -> str:
-        text = f"{news.get('title', '')} {news.get('description', '')}".lower()
-        if any(keyword in text for keyword in config.RUSSIA_KEYWORDS):
+        text = self._news_text(news)
+        russia_score = self._keyword_score(text, config.RUSSIA_KEYWORDS)
+        world_score = self._keyword_score(text, config.WORLD_KEYWORDS)
+
+        if russia_score > world_score:
             return 'рф'
-        if any(keyword in text for keyword in config.WORLD_KEYWORDS):
+        if world_score > 0:
             return 'мир'
+
+        source_category = str(news.get('category', '')).lower()
+        if source_category in {'россия', 'рф'}:
+            return 'рф'
         return 'мир'
 
+    def _is_armed_conflict_news(self, news: Dict) -> bool:
+        text = self._news_text(news)
+        conflict_score = self._keyword_score(text, config.ARMED_CONFLICT_KEYWORDS)
+        if conflict_score == 0:
+            return False
+        has_noise = any(keyword in text for keyword in config.NON_CONFLICT_NOISE_KEYWORDS)
+        return not has_noise
+
+    def _is_economy_news(self, news: Dict) -> bool:
+        text = self._news_text(news)
+        economy_score = self._keyword_score(text, config.ECONOMY_KEYWORDS)
+        if economy_score == 0:
+            return False
+
+        social_score = self._keyword_score(text, config.NON_ECONOMIC_SOCIAL_KEYWORDS)
+        return economy_score > social_score
+
+    def _is_society_news(self, news: Dict) -> bool:
+        text = self._news_text(news)
+        society_score = self._keyword_score(text, config.SOCIETY_KEYWORDS)
+        politics_score = self._keyword_score(text, config.POLITICS_KEYWORDS)
+        return society_score > 0 and society_score >= politics_score
+
+    def _is_politics_news(self, news: Dict) -> bool:
+        text = self._news_text(news)
+        politics_score = self._keyword_score(text, config.POLITICS_KEYWORDS)
+        return politics_score > 0
+
     def _detect_topic(self, news: Dict) -> str:
-        text = f"{news.get('title', '')} {news.get('description', '')}".lower()
-        if any(keyword in text for keyword in config.ECONOMY_KEYWORDS):
+        if self._is_armed_conflict_news(news):
+            return 'конфликт'
+        if self._is_economy_news(news):
             return 'экономика'
-        return 'политика'
+        if self._is_society_news(news):
+            return 'общество'
+        if self._is_politics_news(news):
+            return 'политика'
+        return 'неопределено'
 
     def _detect_categories(self, news: Dict) -> List[str]:
-        text = f"{news.get('title', '')} {news.get('description', '')}".lower()
-        categories: List[str] = []
+        topic = self._detect_topic(news)
+        if topic == 'неопределено':
+            return []
 
-        if any(keyword in text for keyword in config.WORLD_KEYWORDS):
-            categories.append('мир')
-        if any(keyword in text for keyword in config.RUSSIA_KEYWORDS):
-            categories.append('россия')
-        if any(keyword in text for keyword in config.ECONOMY_KEYWORDS):
-            categories.append('экономика')
+        region = self._detect_region(news)
 
-        source_category = news.get('category')
-        if source_category and source_category not in categories:
-            categories.append(source_category)
+        if topic == 'конфликт':
+            return ['вооружённые конфликты рф' if region == 'рф' else 'вооружённые конфликты мир']
+        if topic == 'экономика':
+            return ['экономика рф'] if region == 'рф' else []
+        if topic == 'политика':
+            return ['политика рф' if region == 'рф' else 'политика мир']
+        if topic == 'общество':
+            return ['общество рф'] if region == 'рф' else []
 
-        return categories
+        return []
+
+
+    def _source_weight(self, news: Dict) -> float:
+        sources = news.get('sources') or [news.get('source', '')]
+        weights = [config.SOURCE_RELIABILITY_WEIGHTS.get(src, 1.0) for src in sources if src]
+        return max(weights) if weights else 1.0
+
+    def _importance_keyword_score(self, news: Dict) -> float:
+        text = self._news_text(news)
+        high = self._keyword_score(text, config.HIGH_IMPORTANCE_KEYWORDS)
+        medium = self._keyword_score(text, config.MEDIUM_IMPORTANCE_KEYWORDS)
+        return high * 1.2 + medium * 0.5
+
+    def _freshness_score(self, news: Dict, now: Optional[datetime] = None) -> float:
+        now_value = now or datetime.now()
+        published_at = news.get('published_at', now_value)
+        if not isinstance(published_at, datetime):
+            return 1.0
+        age_hours = max((now_value - published_at).total_seconds() / 3600, 0)
+        half_life = max(config.PRIORITY_RECENCY_HALF_LIFE_HOURS, 1)
+        return math.exp(-age_hours / half_life)
+
+    def _news_priority_score(self, news: Dict, now: Optional[datetime] = None) -> float:
+        topic = self._detect_topic(news)
+        topic_priority = config.TOPIC_BASE_PRIORITY.get(topic, 1.0)
+        source_priority = self._source_weight(news)
+        keyword_priority = self._importance_keyword_score(news)
+        freshness_priority = self._freshness_score(news, now)
+
+        return (topic_priority + keyword_priority) * source_priority * (0.7 + freshness_priority)
+
 
     def is_excluded_russian_topic(self, news: Dict) -> bool:
         if news.get('source') not in config.EXCLUDED_RUSSIAN_SOURCES:
@@ -197,6 +276,7 @@ class NewsBot:
                     'sources': [news['source']],
                     'images': news.get('images', []),
                     'published_at': news['published_at'],
+                    'priority_score': news.get('priority_score', 0.0),
                     'first_seen_at': now,
                     'combined_items': [news]
                 }
@@ -213,6 +293,8 @@ class NewsBot:
                     grouped[normalized_url]['description'] = news['description']
                 if news['published_at'] > grouped[normalized_url]['published_at']:
                     grouped[normalized_url]['published_at'] = news['published_at']
+                if news.get('priority_score', 0.0) > grouped[normalized_url].get('priority_score', 0.0):
+                    grouped[normalized_url]['priority_score'] = news.get('priority_score', 0.0)
                 grouped[normalized_url]['combined_items'].append(news)
 
         return grouped
@@ -230,6 +312,8 @@ class NewsBot:
                 target['images'].append(image_url)
         if len(incoming.get('description', '')) > len(target.get('description', '')):
             target['description'] = incoming['description']
+        if incoming.get('priority_score', 0.0) > target.get('priority_score', 0.0):
+            target['priority_score'] = incoming.get('priority_score', 0.0)
         target['combined_items'].extend(incoming.get('combined_items', []))
 
     def add_to_pending(self, grouped_news: Dict[str, Dict]):
@@ -280,6 +364,7 @@ class NewsBot:
         for cluster in clusters:
             if len(cluster) == 1:
                 cluster[0]['combined_items'] = cluster[0].get('combined_items', [cluster[0]])
+                cluster[0]['priority_score'] = cluster[0].get('priority_score', 0.0)
                 merged.append(cluster[0])
                 continue
 
@@ -320,6 +405,7 @@ class NewsBot:
                 'sources': unique_sources,
                 'categories': unique_categories,
                 'published_at': max(news['published_at'] for news in cluster),
+                'priority_score': max(news.get('priority_score', 0.0) for news in cluster),
                 'images': unique_images,
                 'is_merged_topic': True,
                 'topic_size': len(cluster),
@@ -392,6 +478,7 @@ class NewsBot:
                     continue
                 if content_hash:
                     seen_content_hashes.add(content_hash)
+                news['priority_score'] = self._news_priority_score(news)
                 filtered_news.append(news)
 
             if dropped_non_political:
@@ -420,14 +507,22 @@ class NewsBot:
                 return
 
             matured_news = list(matured_by_url.values())
-            matured_news.sort(key=lambda x: x['published_at'], reverse=True)
+            matured_news.sort(
+                key=lambda x: (x.get('priority_score', 0.0), x['published_at']),
+                reverse=True
+            )
             publish_queue = self.merge_similar_news(matured_news)
-            publish_queue.sort(key=lambda x: x['published_at'], reverse=True)
+            publish_queue.sort(
+                key=lambda x: (x.get('priority_score', 0.0), x['published_at']),
+                reverse=True
+            )
 
             published_count = 0
             published_urls = set()
 
             for news in publish_queue:
+                if published_count >= config.MAX_POSTS_PER_PUBLISH_CYCLE:
+                    break
                 related_news = self._find_related_news(news)
                 success = await self.publish_news(news, related_news)
                 if not success:
@@ -464,13 +559,19 @@ class NewsBot:
         return value.astimezone(self.msk_tz)
 
     def _digest_bucket_label(self, topic: str, region: str) -> str:
+        if topic == 'конфликт' and region == 'рф':
+            return 'Вооружённые конфликты • РФ'
+        if topic == 'конфликт' and region == 'мир':
+            return 'Вооружённые конфликты • Мир'
         if topic == 'экономика' and region == 'рф':
             return 'Экономическая ситуация • РФ'
-        if topic == 'экономика' and region == 'мир':
-            return 'Экономическая ситуация • Мир'
         if topic == 'политика' and region == 'рф':
             return 'Политика • РФ'
-        return 'Политика • Мир'
+        if topic == 'общество' and region == 'рф':
+            return 'Общество • РФ'
+        if topic == 'политика' and region == 'мир':
+            return 'Политика • Мир'
+        return 'Прочее'
 
     def _digest_bucket_key(self, topic: str, region: str) -> str:
         return f"{topic}_{region}"
@@ -483,6 +584,7 @@ class NewsBot:
             return False
         news['categories'] = categories
         news['category'] = categories[0]
+        news['priority_score'] = self._news_priority_score(news)
         if self.is_unwanted_local_news(news):
             return False
         if self.is_blocked_crime_news(news):
@@ -506,21 +608,28 @@ class NewsBot:
             ]
 
             buckets: Dict[str, List[Dict]] = {
-                self._digest_bucket_key('политика', 'мир'): [],
+                self._digest_bucket_key('конфликт', 'мир'): [],
+                self._digest_bucket_key('конфликт', 'рф'): [],
+                self._digest_bucket_key('экономика', 'рф'): [],
                 self._digest_bucket_key('политика', 'рф'): [],
-                self._digest_bucket_key('экономика', 'мир'): [],
-                self._digest_bucket_key('экономика', 'рф'): []
+                self._digest_bucket_key('политика', 'мир'): [],
+                self._digest_bucket_key('общество', 'рф'): []
             }
 
             for news in filtered_news:
                 topic = self._detect_topic(news)
+                if topic == 'неопределено':
+                    continue
                 region = self._detect_region(news)
                 bucket_key = self._digest_bucket_key(topic, region)
                 if bucket_key in buckets:
                     buckets[bucket_key].append(news)
 
             for bucket_key, items in buckets.items():
-                items.sort(key=lambda x: x['published_at'], reverse=True)
+                items.sort(
+                    key=lambda x: (x.get('priority_score', 0.0), x['published_at']),
+                    reverse=True
+                )
                 buckets[bucket_key] = items[:config.DIGEST_MAX_ITEMS]
 
             used_urls = set()
