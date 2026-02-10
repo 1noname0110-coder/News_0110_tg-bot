@@ -6,6 +6,7 @@
 import asyncio
 import logging
 import re
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict
 
@@ -127,7 +128,8 @@ class NewsBot:
             return False
 
         social_score = self._keyword_score(text, config.NON_ECONOMIC_SOCIAL_KEYWORDS)
-        return economy_score > social_score
+        politics_score = self._keyword_score(text, config.POLITICS_KEYWORDS)
+        return economy_score > social_score and economy_score >= politics_score + 1
 
     def _is_society_news(self, news: Dict) -> bool:
         text = self._news_text(news)
@@ -168,6 +170,40 @@ class NewsBot:
             return ['общество рф'] if region == 'рф' else []
 
         return []
+
+    def _source_weight(self, news: Dict) -> float:
+        source_name = news.get('source') or ''
+        sources = [part.strip() for part in source_name.split(',') if part.strip()]
+        if not sources:
+            return 1.0
+        weights = [config.SOURCE_PRIORITY_WEIGHTS.get(src, 1.0) for src in sources]
+        return max(weights) if weights else 1.0
+
+    def _importance_score(self, news: Dict) -> float:
+        topic = self._detect_topic(news)
+        base = config.TOPIC_PRIORITY_WEIGHTS.get(topic, 1.0)
+        text = self._news_text(news)
+        important_hits = self._keyword_score(text, config.IMPORTANT_NEWS_KEYWORDS)
+        keyword_bonus = min(important_hits * 0.5, config.MAX_IMPORTANT_KEYWORD_BONUS)
+        return (base + keyword_bonus) * self._source_weight(news)
+
+    def _freshness_score(self, news: Dict, now: datetime) -> float:
+        published_at = news.get('published_at', now)
+        if not isinstance(published_at, datetime):
+            return 0.0
+
+        if now.tzinfo is not None and published_at.tzinfo is None:
+            published_at = published_at.replace(tzinfo=now.tzinfo)
+        elif now.tzinfo is None and published_at.tzinfo is not None:
+            published_at = published_at.replace(tzinfo=None)
+
+        age_hours = max((now - published_at).total_seconds() / 3600, 0.0)
+        half_life = max(config.FRESHNESS_HALF_LIFE_HOURS, 0.1)
+        decay = math.exp(-math.log(2) * age_hours / half_life)
+        return config.MAX_FRESHNESS_BONUS * decay
+
+    def _priority_score(self, news: Dict, now: datetime) -> float:
+        return self._importance_score(news) + self._freshness_score(news, now)
 
     def is_excluded_russian_topic(self, news: Dict) -> bool:
         if news.get('source') not in config.EXCLUDED_RUSSIAN_SOURCES:
@@ -467,9 +503,14 @@ class NewsBot:
                 return
 
             matured_news = list(matured_by_url.values())
-            matured_news.sort(key=lambda x: x['published_at'], reverse=True)
             publish_queue = self.merge_similar_news(matured_news)
-            publish_queue.sort(key=lambda x: x['published_at'], reverse=True)
+            publish_queue.sort(
+                key=lambda item: (
+                    self._priority_score(item, now),
+                    item.get('published_at', now)
+                ),
+                reverse=True
+            )
 
             published_count = 0
             published_urls = set()
@@ -577,7 +618,13 @@ class NewsBot:
                     buckets[bucket_key].append(news)
 
             for bucket_key, items in buckets.items():
-                items.sort(key=lambda x: x['published_at'], reverse=True)
+                items.sort(
+                    key=lambda item: (
+                        self._priority_score(item, now_msk),
+                        item.get('published_at', now_msk)
+                    ),
+                    reverse=True
+                )
                 buckets[bucket_key] = items[:config.DIGEST_MAX_ITEMS]
 
             used_urls = set()
