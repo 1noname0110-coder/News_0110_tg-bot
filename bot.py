@@ -163,7 +163,7 @@ class NewsBot:
         if topic == 'экономика':
             return ['экономика рф' if region == 'рф' else 'мир']
         if topic == 'политика':
-            return ['политика рф' if region == 'рф' else 'мир']
+            return ['политика рф' if region == 'рф' else 'политика мир']
         if topic == 'общество':
             return ['общество рф' if region == 'рф' else 'мир']
 
@@ -521,6 +521,8 @@ class NewsBot:
             return 'Политика • РФ'
         if topic == 'общество' and region == 'рф':
             return 'Общество • РФ'
+        if topic == 'политика' and region == 'мир':
+            return 'Политика • Мир'
         return 'Мир'
 
     def _digest_bucket_key(self, topic: str, region: str) -> str:
@@ -561,6 +563,7 @@ class NewsBot:
                 self._digest_bucket_key('конфликт', 'рф'): [],
                 self._digest_bucket_key('экономика', 'рф'): [],
                 self._digest_bucket_key('политика', 'рф'): [],
+                self._digest_bucket_key('политика', 'мир'): [],
                 self._digest_bucket_key('общество', 'рф'): [],
                 self._digest_bucket_key('мир', 'мир'): []
             }
@@ -570,7 +573,7 @@ class NewsBot:
                 if topic == 'неопределено':
                     continue
                 region = self._detect_region(news)
-                if region == 'мир' and topic != 'конфликт':
+                if region == 'мир' and topic in {'экономика', 'общество'}:
                     bucket_key = self._digest_bucket_key('мир', 'мир')
                 else:
                     bucket_key = self._digest_bucket_key(topic, region)
