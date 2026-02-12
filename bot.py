@@ -10,11 +10,10 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict
 
-from telegram import Bot, InputMediaPhoto
+from telegram import Bot
 from telegram.constants import ParseMode
 
 import config
-from currency_fetcher import CurrencyFetcher
 from database import NewsDatabase
 from news_collector import NewsCollector
 from post_generator import PostGenerator
@@ -622,7 +621,9 @@ class NewsBot:
                     continue
                 region = self._detect_region(news)
                 if region == 'мир' and topic in {'экономика', 'общество'}:
-                    bucket_key = self._digest_bucket_key('мир', 'мир')
+                    # Для мировой экономики/общества используем рубрику мировой политики,
+                    # чтобы не терять значимые международные события.
+                    bucket_key = self._digest_bucket_key('политика', 'мир')
                 else:
                     bucket_key = self._digest_bucket_key(topic, region)
                 if bucket_key in buckets:
@@ -633,7 +634,8 @@ class NewsBot:
                     key=lambda x: (x.get('priority_score', 0.0), x['published_at']),
                     reverse=True
                 )
-                buckets[bucket_key] = items[:config.DIGEST_MAX_ITEMS]
+                # Не обрезаем здесь: иначе overflow всегда пуст и вторая волна не сработает.
+                buckets[bucket_key] = items
 
             used_urls = set()
             used_hashes = set()
