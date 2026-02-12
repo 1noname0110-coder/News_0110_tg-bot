@@ -8,13 +8,13 @@ import logging
 import re
 import math
 from datetime import datetime, timedelta, timezone
+from collections import deque, defaultdict
 from typing import Optional, List, Dict
 
-from telegram import Bot, InputMediaPhoto
+from telegram import Bot
 from telegram.constants import ParseMode
 
 import config
-from currency_fetcher import CurrencyFetcher
 from database import NewsDatabase
 from news_collector import NewsCollector
 from post_generator import PostGenerator
@@ -38,6 +38,9 @@ class NewsBot:
         self.post_generator = PostGenerator(config.MAX_POST_LENGTH)
         self.pending_news: Dict[str, Dict] = {}
         self.msk_tz = timezone(timedelta(hours=3))
+        self.breaking_publish_times = deque()
+        self.pending_breaking_digest: List[Dict] = []
+        self.last_collector_stats: Dict[str, Dict[str, int]] = {}
 
         logger.info("Бот инициализирован")
 
@@ -200,6 +203,31 @@ class NewsBot:
 
         return (topic_priority + keyword_priority) * source_priority * (0.7 + freshness_priority)
 
+    def _priority_breakdown(self, news: Dict, now: Optional[datetime] = None) -> Dict[str, object]:
+        topic = self._detect_topic(news)
+        topic_priority = config.TOPIC_BASE_PRIORITY.get(topic, 1.0)
+        source_priority = self._source_weight(news)
+        keyword_priority = self._importance_keyword_score(news)
+        freshness_priority = self._freshness_score(news, now)
+        score = (topic_priority + keyword_priority) * source_priority * (0.7 + freshness_priority)
+        return {
+            'topic': topic,
+            'topic_priority': topic_priority,
+            'source_priority': source_priority,
+            'keyword_priority': keyword_priority,
+            'freshness_priority': freshness_priority,
+            'score': score,
+        }
+
+    def is_breaking_news(self, news: Dict, threshold: Optional[float] = None) -> bool:
+        text = self._news_text(news)
+        high_hits = self._keyword_score(text, config.HIGH_IMPORTANCE_KEYWORDS)
+        score = news.get('priority_score', 0.0)
+        effective_threshold = threshold if threshold is not None else config.BREAKING_NEWS_MIN_PRIORITY
+        return high_hits >= 2 or score >= effective_threshold
+
+    def is_breaking_or_urgent(self, news: Dict) -> bool:
+        return bool(news.get('is_breaking'))
 
     def is_excluded_russian_topic(self, news: Dict) -> bool:
         if news.get('source') not in config.EXCLUDED_RUSSIAN_SOURCES:
@@ -335,7 +363,9 @@ class NewsBot:
 
             self._merge_into_existing(existing, news)
 
-    def _is_ready_for_publish(self, news: Dict, now: datetime) -> bool:
+    def _is_ready_for_publish(self, news: Dict, now: datetime, breaking_mode: bool = False) -> bool:
+        if breaking_mode and self.is_breaking_or_urgent(news):
+            return True
         first_seen = news.get('first_seen_at', now)
         return now - first_seen >= timedelta(minutes=config.PUBLISH_DELAY_MINUTES)
 
@@ -426,11 +456,13 @@ class NewsBot:
                     return recent
         return None
 
-    async def process_and_publish_news(self):
+    async def process_and_publish_news(self, breaking_only: bool = False):
         try:
-            logger.info("Начало сбора новостей...")
+            logger.info("Начало сбора новостей%s...", " (режим срочных)" if breaking_only else "")
             all_news = await self.news_collector.collect_all_news()
+            self.last_collector_stats = self.news_collector.last_fetch_stats
             new_news = self.news_collector.filter_new_news(all_news, self.database)
+            effective_breaking_threshold = self._adaptive_breaking_threshold(len(new_news))
 
             filtered_news = []
             dropped_local_noise = 0
@@ -478,7 +510,22 @@ class NewsBot:
                     continue
                 if content_hash:
                     seen_content_hashes.add(content_hash)
-                news['priority_score'] = self._news_priority_score(news)
+                breakdown = self._priority_breakdown(news)
+                news['priority_score'] = breakdown['score']
+                news['is_breaking'] = self.is_breaking_news(news, threshold=effective_breaking_threshold)
+                if config.DEBUG_PRIORITY_LOGGING:
+                    logger.info(
+                        "Priority: topic=%s tp=%.2f kw=%.2f src=%.2f fresh=%.2f score=%.2f | %s",
+                        breakdown['topic'],
+                        breakdown['topic_priority'],
+                        breakdown['keyword_priority'],
+                        breakdown['source_priority'],
+                        breakdown['freshness_priority'],
+                        breakdown['score'],
+                        news.get('title', '')[:100]
+                    )
+                if breaking_only and not news['is_breaking']:
+                    continue
                 filtered_news.append(news)
 
             if dropped_non_political:
@@ -499,11 +546,15 @@ class NewsBot:
 
             now = datetime.now()
             matured_by_url = {
-                key: news for key, news in self.pending_news.items() if self._is_ready_for_publish(news, now)
+                key: news for key, news in self.pending_news.items()
+                if self._is_ready_for_publish(news, now, breaking_mode=breaking_only)
             }
 
             if not matured_by_url:
-                logger.info("Нет новостей, готовых к публикации (ожидаем 30 минут для агрегации)")
+                logger.info(
+                    "Нет новостей, готовых к публикации%s",
+                    " (режим срочных)" if breaking_only else " (ожидаем 30 минут для агрегации)"
+                )
                 return
 
             matured_news = list(matured_by_url.values())
@@ -523,10 +574,15 @@ class NewsBot:
             for news in publish_queue:
                 if published_count >= config.MAX_POSTS_PER_PUBLISH_CYCLE:
                     break
+                if breaking_only and self._breaking_limit_reached(datetime.now(self.msk_tz)):
+                    self.pending_breaking_digest.append(news)
+                    continue
                 related_news = self._find_related_news(news)
                 success = await self.publish_news(news, related_news)
                 if not success:
                     continue
+                if breaking_only and news.get('is_breaking'):
+                    self._record_breaking_publish(datetime.now(self.msk_tz))
 
                 for item in news.get('combined_items', [news]):
                     item_categories = item.get('categories', [item.get('category', 'general')])
@@ -597,7 +653,9 @@ class NewsBot:
         try:
             logger.info("Сбор новостей для ежедневной сводки...")
             all_news = await self.news_collector.collect_all_news()
+            self.last_collector_stats = self.news_collector.last_fetch_stats
             new_news = self.news_collector.filter_new_news(all_news, self.database)
+            effective_breaking_threshold = self._adaptive_breaking_threshold(len(new_news))
 
             now_msk = datetime.now(self.msk_tz)
             lookback_boundary = now_msk - timedelta(hours=config.DIGEST_LOOKBACK_HOURS)
@@ -622,7 +680,9 @@ class NewsBot:
                     continue
                 region = self._detect_region(news)
                 if region == 'мир' and topic in {'экономика', 'общество'}:
-                    bucket_key = self._digest_bucket_key('мир', 'мир')
+                    # Для мировой экономики/общества используем рубрику мировой политики,
+                    # чтобы не терять значимые международные события.
+                    bucket_key = self._digest_bucket_key('политика', 'мир')
                 else:
                     bucket_key = self._digest_bucket_key(topic, region)
                 if bucket_key in buckets:
@@ -633,7 +693,8 @@ class NewsBot:
                     key=lambda x: (x.get('priority_score', 0.0), x['published_at']),
                     reverse=True
                 )
-                buckets[bucket_key] = items[:config.DIGEST_MAX_ITEMS]
+                # Не обрезаем здесь: иначе overflow всегда пуст и вторая волна не сработает.
+                buckets[bucket_key] = items
 
             used_urls = set()
             used_hashes = set()
@@ -720,15 +781,90 @@ class NewsBot:
             target += timedelta(days=1)
         return (target - now).total_seconds()
 
+    def _adaptive_breaking_threshold(self, recent_count: int) -> float:
+        base = config.BREAKING_NEWS_MIN_PRIORITY
+        delta = max(config.BREAKING_DYNAMIC_THRESHOLD_DELTA, 0)
+        if recent_count >= 25:
+            return base + delta
+        if recent_count <= 5:
+            return max(1.0, base - delta * 0.5)
+        return base
+
+    def _breaking_limit_reached(self, now_msk: datetime) -> bool:
+        cutoff = now_msk - timedelta(hours=1)
+        while self.breaking_publish_times and self.breaking_publish_times[0] < cutoff:
+            self.breaking_publish_times.popleft()
+        return len(self.breaking_publish_times) >= config.BREAKING_MAX_PER_HOUR
+
+    def _record_breaking_publish(self, now_msk: datetime) -> None:
+        self.breaking_publish_times.append(now_msk)
+
+    async def _publish_pending_breaking_digest(self, now_msk: datetime) -> None:
+        if not self.pending_breaking_digest:
+            return
+        heading = "Срочное за последний час"
+        items = sorted(
+            self.pending_breaking_digest,
+            key=lambda x: (x.get('priority_score', 0.0), x.get('published_at', now_msk)),
+            reverse=True
+        )[:config.BREAKING_MINI_DIGEST_MAX_ITEMS]
+        text = self.post_generator.format_digest_post(heading, items, now_msk)
+        await self._send_message(text)
+        for item in items:
+            self.database.save_news(
+                title=item['title'],
+                url=item['url'],
+                source=item.get('source', 'Unknown'),
+                category='breaking_digest',
+                published_at=item.get('published_at', now_msk),
+                description=item.get('description', '')
+            )
+        self.pending_breaking_digest.clear()
+
+    async def _send_admin_report(self, now_msk: datetime) -> None:
+        if not config.ADMIN_CHAT_ID:
+            return
+        stats = self.database.get_news_stats()
+        source_stats = self.last_collector_stats
+        source_lines = []
+        for source, values in sorted(source_stats.items(), key=lambda x: x[0]):
+            source_lines.append(
+                f"- {source}: ok={values.get('success', 0)} fail={values.get('fail', 0)} items={values.get('items', 0)}"
+            )
+        if not source_lines:
+            source_lines.append("- пока нет данных")
+        report = (
+            f"*Ежедневный отчёт*\n"
+            f"🕛 {now_msk.strftime('%d.%m.%Y %H:%M')} МСК\n\n"
+            f"Опубликовано всего: {stats.get('total', 0)}\n"
+            f"По категориям: {stats.get('by_category', {})}\n\n"
+            f"*Состояние источников*\n" + "\n".join(source_lines)
+        )
+        try:
+            await self.bot.send_message(chat_id=config.ADMIN_CHAT_ID, text=report)
+        except Exception as exc:
+            logger.warning("Не удалось отправить админ-отчёт: %s", exc)
+
     async def run_continuously(self):
-        logger.info("Бот запущен. Публикация сводок по расписанию МСК.")
+        logger.info("Бот запущен. Сводки по расписанию МСК + режим срочных новостей.")
+        next_digest_in = self._seconds_until_next_digest()
+        next_digest_at = datetime.now(self.msk_tz) + timedelta(seconds=next_digest_in)
 
         while True:
             try:
-                sleep_seconds = self._seconds_until_next_digest()
-                logger.info("Ожидание до следующей сводки: %.0f секунд", sleep_seconds)
+                now_msk = datetime.now(self.msk_tz)
+                if now_msk >= next_digest_at:
+                    await self.publish_daily_digest()
+                    await self._send_admin_report(now_msk)
+                    next_digest_at = next_digest_at + timedelta(days=1)
+                    continue
+
+                if config.ENABLE_BREAKING_NEWS:
+                    await self.process_and_publish_news(breaking_only=True)
+                    await self._publish_pending_breaking_digest(now_msk)
+
+                sleep_seconds = max(30, config.CHECK_INTERVAL_SECONDS)
                 await asyncio.sleep(sleep_seconds)
-                await self.publish_daily_digest()
             except KeyboardInterrupt:
                 logger.info("Получен сигнал остановки, завершение работы...")
                 break
