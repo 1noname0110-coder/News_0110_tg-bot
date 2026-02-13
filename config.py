@@ -57,7 +57,7 @@ RSS_FETCH_RETRY_BACKOFF_SECONDS = 1.5
 
 # Куда отправлять ежедневный служебный отчёт (опционально)
 # Формат: @username или chat_id. Пусто — отчёты отключены.
-ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '')
+ADMIN_CHAT_ID = os.getenv('@No_Name_0110_C', '')
 
 # Время публикации ежедневной сводки (МСК)
 DIGEST_PUBLISH_HOUR_MSK = 12
