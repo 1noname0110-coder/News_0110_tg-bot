@@ -17,6 +17,34 @@ for env_dir in _ENV_DIRS:
     for env_name in _ENV_FILENAMES:
         load_dotenv(env_dir / env_name)
 
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
 # Токен бота, полученный от @BotFather в Telegram
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 
@@ -28,23 +56,49 @@ CHANNEL_ID = os.getenv('CHANNEL_ID', '-1003531603514')
 MAX_POST_LENGTH = 4500
 
 # Минимальная задержка перед публикацией новости, чтобы сгруппировать похожие темы
-PUBLISH_DELAY_MINUTES = 30
+PUBLISH_DELAY_MINUTES = _env_int('PUBLISH_DELAY_MINUTES', 30)
 
 # Интервал проверки источников (в секундах)
-CHECK_INTERVAL_SECONDS = 300
+CHECK_INTERVAL_SECONDS = _env_int('CHECK_INTERVAL_SECONDS', 300)
+
+# Публиковать ли срочные новости вне ежедневной сводки
+ENABLE_BREAKING_NEWS = _env_bool('ENABLE_BREAKING_NEWS', True)
+
+# Порог приоритета для срочной публикации
+BREAKING_NEWS_MIN_PRIORITY = _env_float('BREAKING_NEWS_MIN_PRIORITY', 7.5)
+
+# Максимум срочных публикаций в час (излишки уйдут в мини-сводку)
+BREAKING_MAX_PER_HOUR = _env_int('BREAKING_MAX_PER_HOUR', 3)
+
+# Максимум пунктов в мини-сводке по срочным новостям
+BREAKING_MINI_DIGEST_MAX_ITEMS = _env_int('BREAKING_MINI_DIGEST_MAX_ITEMS', 8)
+
+# Вести подробный лог разложения score по компонентам
+DEBUG_PRIORITY_LOGGING = _env_bool('DEBUG_PRIORITY_LOGGING', False)
+
+# Максимальная динамическая поправка порога срочности при высоком/низком потоке
+BREAKING_DYNAMIC_THRESHOLD_DELTA = _env_float('BREAKING_DYNAMIC_THRESHOLD_DELTA', 1.0)
+
+# Настройки повторов запросов к RSS
+RSS_FETCH_RETRY_ATTEMPTS = _env_int('RSS_FETCH_RETRY_ATTEMPTS', 3)
+RSS_FETCH_RETRY_BACKOFF_SECONDS = _env_float('RSS_FETCH_RETRY_BACKOFF_SECONDS', 1.5)
+
+# Куда отправлять ежедневный служебный отчёт (опционально)
+# Формат: @username или chat_id. Пусто — отчёты отключены.
+ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '')
 
 # Время публикации ежедневной сводки (МСК)
-DIGEST_PUBLISH_HOUR_MSK = 12
-DIGEST_PUBLISH_MINUTE_MSK = 0
+DIGEST_PUBLISH_HOUR_MSK = _env_int('DIGEST_PUBLISH_HOUR_MSK', 12)
+DIGEST_PUBLISH_MINUTE_MSK = _env_int('DIGEST_PUBLISH_MINUTE_MSK', 0)
 
 # Сколько часов назад брать новости для ежедневной сводки
-DIGEST_LOOKBACK_HOURS = 24
+DIGEST_LOOKBACK_HOURS = _env_int('DIGEST_LOOKBACK_HOURS', 24)
 
 # Максимум новостей в одном ежедневном посте
-DIGEST_MAX_ITEMS = 5
+DIGEST_MAX_ITEMS = _env_int('DIGEST_MAX_ITEMS', 5)
 
 # Задержка перед второй волной публикаций (если в рубрике не уместились все важные новости)
-DIGEST_SECOND_WAVE_DELAY_MINUTES = 20
+DIGEST_SECOND_WAVE_DELAY_MINUTES = _env_int('DIGEST_SECOND_WAVE_DELAY_MINUTES', 20)
 
 # Количество новостей для проверки за один раз
 NEWS_CHECK_BATCH = 20

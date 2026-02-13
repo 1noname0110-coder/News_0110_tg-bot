@@ -392,7 +392,7 @@ class NewsDatabase:
         conn.commit()
         conn.close()
     
-    def get_news_stats(self) -> Dict:
+    def get_news_stats(self, hours: int | None = None) -> Dict:
         """
         Получает статистику по опубликованным новостям.
         
@@ -402,16 +402,28 @@ class NewsDatabase:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Общее количество новостей
-        cursor.execute('SELECT COUNT(*) FROM news')
-        total = cursor.fetchone()[0]
-        
-        # Количество по категориям
-        cursor.execute('''
-            SELECT category, COUNT(*) as count
-            FROM news
-            GROUP BY category
-        ''')
+        if hours is None:
+            cursor.execute('SELECT COUNT(*) FROM news')
+            total = cursor.fetchone()[0]
+            cursor.execute('''
+                SELECT category, COUNT(*) as count
+                FROM news
+                GROUP BY category
+            ''')
+        else:
+            safe_hours = max(int(hours), 1)
+            cursor.execute('''
+                SELECT COUNT(*) FROM news
+                WHERE datetime(created_at) > datetime('now', '-' || ? || ' hours')
+            ''', (safe_hours,))
+            total = cursor.fetchone()[0]
+            cursor.execute('''
+                SELECT category, COUNT(*) as count
+                FROM news
+                WHERE datetime(created_at) > datetime('now', '-' || ? || ' hours')
+                GROUP BY category
+            ''', (safe_hours,))
+
         by_category = {row[0]: row[1] for row in cursor.fetchall()}
         
         conn.close()
