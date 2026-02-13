@@ -181,9 +181,22 @@ class PostGenerator:
         if not clean_description:
             return ""
 
-        sentence_match = re.split(r'(?<=[.!?])\s+', clean_description)
-        summary = sentence_match[0] if sentence_match else clean_description
-        summary = summary.strip()
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', clean_description) if s.strip()]
+        if not sentences:
+            return ""
+
+        # Выбираем максимально информативное предложение из первых нескольких.
+        candidates = sentences[:4]
+
+        def sentence_score(sentence: str) -> int:
+            score = min(len(sentence), 220)
+            if re.search(r'\d', sentence):
+                score += 40
+            if any(marker in sentence.lower() for marker in ['заявил', 'сообщил', 'принял', 'подписал', 'одобрил']):
+                score += 25
+            return score
+
+        summary = max(candidates, key=sentence_score)
 
         if len(summary) > max_length:
             summary = summary[:max_length - 1].rstrip() + "…"
