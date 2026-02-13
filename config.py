@@ -85,7 +85,7 @@ RSS_FETCH_RETRY_BACKOFF_SECONDS = _env_float('RSS_FETCH_RETRY_BACKOFF_SECONDS', 
 
 # Куда отправлять ежедневный служебный отчёт (опционально)
 # Формат: @username или chat_id. Пусто — отчёты отключены.
-ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '')
+ADMIN_CHAT_ID = os.getenv('5322247321', '')
 
 # Публиковать ли срочные новости вне ежедневной сводки
 ENABLE_BREAKING_NEWS = True
