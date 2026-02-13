@@ -9,9 +9,9 @@ import re
 import math
 from datetime import datetime, timedelta, timezone
 from collections import deque, defaultdict
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 
-from telegram import Bot
+from telegram import Bot, Update
 from telegram.constants import ParseMode
 
 import config
@@ -41,9 +41,91 @@ class NewsBot:
         self.breaking_publish_times = deque()
         self.pending_breaking_digest: List[Dict] = []
         self.last_collector_stats: Dict[str, Dict[str, int]] = {}
+        self.last_update_id: Optional[int] = None
 
         logger.info("Бот инициализирован")
 
+
+    def _is_admin_chat(self, chat_id: Any) -> bool:
+        if not config.ADMIN_CHAT_ID:
+            return False
+        return str(chat_id) == str(config.ADMIN_CHAT_ID)
+
+    async def _send_admin_message(self, text: str) -> None:
+        if not config.ADMIN_CHAT_ID:
+            return
+        await self.bot.send_message(chat_id=config.ADMIN_CHAT_ID, text=text)
+
+    async def _poll_admin_commands(self) -> None:
+        if not config.ADMIN_CHAT_ID:
+            return
+        updates = await self.bot.get_updates(offset=None if self.last_update_id is None else self.last_update_id + 1, timeout=0)
+        for update in updates:
+            self.last_update_id = update.update_id
+            await self._handle_update_command(update)
+
+    async def _handle_update_command(self, update: Update) -> None:
+        if not update.message or not update.message.text:
+            return
+        if not self._is_admin_chat(update.message.chat_id):
+            return
+
+        text = update.message.text.strip()
+        if not text.startswith('/'):
+            return
+
+        cmd = text.split()[0].split('@')[0].lower()
+        parts = text.split()
+
+        if cmd == '/stats':
+            stats24 = self.database.get_news_stats(hours=24)
+            stats7d = self.database.get_news_stats(hours=24 * 7)
+            await self._send_admin_message(
+                "📊 Статистика публикаций\n"
+                f"24ч: {stats24.get('total', 0)} | по категориям: {stats24.get('by_category', {})}\n"
+                f"7д: {stats7d.get('total', 0)} | по категориям: {stats7d.get('by_category', {})}"
+            )
+            return
+
+        if cmd == '/breaking':
+            if len(parts) == 1:
+                await self._send_admin_message(f"Breaking сейчас: {'ON' if config.ENABLE_BREAKING_NEWS else 'OFF'}")
+                return
+            value = parts[1].lower()
+            if value in {'on', '1', 'true'}:
+                config.ENABLE_BREAKING_NEWS = True
+            elif value in {'off', '0', 'false'}:
+                config.ENABLE_BREAKING_NEWS = False
+            else:
+                await self._send_admin_message("Использование: /breaking on|off")
+                return
+            await self._send_admin_message(f"Breaking переключен: {'ON' if config.ENABLE_BREAKING_NEWS else 'OFF'}")
+            return
+
+        if cmd == '/threshold':
+            if len(parts) == 1:
+                await self._send_admin_message(f"Текущий порог breaking: {config.BREAKING_NEWS_MIN_PRIORITY:.2f}")
+                return
+            try:
+                new_threshold = float(parts[1].replace(',', '.'))
+            except ValueError:
+                await self._send_admin_message("Использование: /threshold 7.5")
+                return
+            config.BREAKING_NEWS_MIN_PRIORITY = max(1.0, min(new_threshold, 20.0))
+            await self._send_admin_message(f"Новый порог breaking: {config.BREAKING_NEWS_MIN_PRIORITY:.2f}")
+            return
+
+        if cmd == '/sources':
+            lines = ["🛰️ Состояние источников"]
+            if not self.last_collector_stats:
+                lines.append("- пока нет данных")
+            for source, values in sorted(self.last_collector_stats.items(), key=lambda x: x[0]):
+                lines.append(
+                    f"- {source}: ok={values.get('success', 0)} fail={values.get('fail', 0)} "
+                    f"items={values.get('items', 0)}"
+                )
+            await self._send_admin_message("\n".join(lines))
+            return
     async def _send_message(self, text: str) -> bool:
         try:
             await self.bot.send_message(
@@ -841,7 +923,7 @@ class NewsBot:
             f"*Состояние источников*\n" + "\n".join(source_lines)
         )
         try:
-            await self.bot.send_message(chat_id=config.ADMIN_CHAT_ID, text=report)
+            await self._send_admin_message(report)
         except Exception as exc:
             logger.warning("Не удалось отправить админ-отчёт: %s", exc)
 
@@ -853,6 +935,8 @@ class NewsBot:
         while True:
             try:
                 now_msk = datetime.now(self.msk_tz)
+                await self._poll_admin_commands()
+
                 if now_msk >= next_digest_at:
                     await self.publish_daily_digest()
                     await self._send_admin_report(now_msk)
