@@ -85,33 +85,7 @@ RSS_FETCH_RETRY_BACKOFF_SECONDS = _env_float('RSS_FETCH_RETRY_BACKOFF_SECONDS', 
 
 # Куда отправлять ежедневный служебный отчёт (опционально)
 # Формат: @username или chat_id. Пусто — отчёты отключены.
-ADMIN_CHAT_ID = os.getenv('5322247321', '')
-
-# Публиковать ли срочные новости вне ежедневной сводки
-ENABLE_BREAKING_NEWS = True
-
-# Порог приоритета для срочной публикации
-BREAKING_NEWS_MIN_PRIORITY = 7.5
-
-# Максимум срочных публикаций в час (излишки уйдут в мини-сводку)
-BREAKING_MAX_PER_HOUR = 3
-
-# Максимум пунктов в мини-сводке по срочным новостям
-BREAKING_MINI_DIGEST_MAX_ITEMS = 8
-
-# Вести подробный лог разложения score по компонентам
-DEBUG_PRIORITY_LOGGING = False
-
-# Максимальная динамическая поправка порога срочности при высоком/низком потоке
-BREAKING_DYNAMIC_THRESHOLD_DELTA = 1.0
-
-# Настройки повторов запросов к RSS
-RSS_FETCH_RETRY_ATTEMPTS = 3
-RSS_FETCH_RETRY_BACKOFF_SECONDS = 1.5
-
-# Куда отправлять ежедневный служебный отчёт (опционально)
-# Формат: @username или chat_id. Пусто — отчёты отключены.
-ADMIN_CHAT_ID = os.getenv('5322247321', '')
+ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '5322247321')
 
 # Время публикации ежедневной сводки (МСК)
 DIGEST_PUBLISH_HOUR_MSK = _env_int('DIGEST_PUBLISH_HOUR_MSK', 12)
