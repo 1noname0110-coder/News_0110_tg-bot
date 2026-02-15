@@ -66,12 +66,31 @@ class NewsDatabase:
             )
         ''')
         
+        # Таблица снимков курсов валют (для антидублирования сервисных постов)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS currency_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_hash TEXT UNIQUE NOT NULL,
+                post_type TEXT NOT NULL,
+                usd_rub REAL NOT NULL,
+                eur_rub REAL NOT NULL,
+                cny_rub REAL NOT NULL,
+                rub_usd REAL NOT NULL,
+                btc_usd REAL NOT NULL,
+                btc_rub REAL NOT NULL,
+                published_at TIMESTAMP NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         # Создаем индексы для быстрого поиска
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_news_hash ON news(news_hash)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_news_published_at ON news(published_at)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_news_category ON news(category)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_news_url ON news(url)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_news_content_hash ON news(content_hash)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_currency_published_at ON currency_snapshots(published_at)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_currency_post_type ON currency_snapshots(post_type)')
         
         conn.commit()
         conn.close()
@@ -432,3 +451,77 @@ class NewsDatabase:
             'total': total,
             'by_category': by_category
         }
+
+    def _currency_snapshot_hash(self, rates: Dict) -> str:
+        payload = (
+            f"{rates['usd_rub']:.4f}|{rates['eur_rub']:.4f}|{rates['cny_rub']:.4f}|"
+            f"{rates['rub_usd']:.6f}|{rates['btc_usd']:.2f}|{rates['btc_rub']:.2f}"
+        )
+        return hashlib.md5(payload.encode('utf-8')).hexdigest()
+
+    def save_currency_snapshot(self, rates: Dict, post_type: str, published_at: datetime) -> bool:
+        snapshot_hash = self._currency_snapshot_hash(rates)
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute(
+                '''
+                INSERT INTO currency_snapshots (
+                    snapshot_hash, post_type, usd_rub, eur_rub, cny_rub, rub_usd, btc_usd, btc_rub, published_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    snapshot_hash,
+                    post_type,
+                    float(rates['usd_rub']),
+                    float(rates['eur_rub']),
+                    float(rates['cny_rub']),
+                    float(rates['rub_usd']),
+                    float(rates['btc_usd']),
+                    float(rates['btc_rub']),
+                    published_at,
+                )
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+        finally:
+            conn.close()
+
+    def get_latest_currency_snapshot(self) -> Optional[Dict]:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(
+            '''
+            SELECT post_type, usd_rub, eur_rub, cny_rub, rub_usd, btc_usd, btc_rub, published_at
+            FROM currency_snapshots
+            ORDER BY datetime(published_at) DESC
+            LIMIT 1
+            '''
+        )
+
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def has_currency_post_for_day(self, date_str: str, post_type: str) -> bool:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            '''
+            SELECT 1 FROM currency_snapshots
+            WHERE date(published_at) = ? AND post_type = ?
+            LIMIT 1
+            ''',
+            (date_str, post_type)
+        )
+
+        exists = cursor.fetchone() is not None
+        conn.close()
+        return exists
+

@@ -237,6 +237,95 @@ class PostGenerator:
 
         return "\n".join(post_parts)
 
+
+    def compress_to_fact_line(self, news: Dict, max_length: int = 180) -> str:
+        """Сжимает новость до 1 строки факта без оценок и «воды»."""
+        title = self.clean_text(news.get('title', ''))
+        description = self.clean_text(news.get('description', ''))
+
+        base = title
+        if description:
+            summary = self.summarize_description(description, max_length=110)
+            if summary and summary.lower() not in title.lower():
+                base = f"{title} — {summary}"
+
+        # Убираем цитаты/оценочные хвосты
+        base = re.sub(r'[«"].{0,120}?[»"]', '', base)
+        base = re.sub(r'\b(по его словам|по её словам|как считает|как полагает)\b.*$', '', base, flags=re.IGNORECASE)
+        base = re.sub(r'\s+', ' ', base).strip(' .,-')
+
+        if len(base) > max_length:
+            base = base[:max_length - 1].rstrip() + '…'
+
+        return base
+
+    def format_structured_digest(self, title: str, grouped_news: Dict[str, List[Dict]], generated_at: Optional[datetime] = None) -> List[str]:
+        """Формирует структурированный дневной отчёт в формате ТЗ."""
+        ordered_sections = [
+            ('РОССИЯ', ['Политика', 'Экономика', 'Безопасность']),
+            ('МИР', ['Геополитика', 'Экономика', 'Жизнь за рубежом']),
+        ]
+
+        lines = [f"*{title}*"]
+        if generated_at:
+            lines.append(f"🕛 {generated_at.strftime('%d.%m.%Y %H:%M')} МСК")
+        lines.append('')
+
+        for block_name, rubrics in ordered_sections:
+            lines.append(f"*{block_name}*")
+            for rubric in rubrics:
+                lines.append(f"_{rubric}_")
+                bucket_key = f"{block_name}|{rubric}"
+                bucket_items = grouped_news.get(bucket_key, [])
+                if not bucket_items:
+                    lines.append('• —')
+                    continue
+                for item in bucket_items:
+                    lines.append(f"• {self.compress_to_fact_line(item)}")
+                lines.append('')
+
+        full_text = "\n".join(lines).strip()
+        if len(full_text) <= self.max_length:
+            return [full_text]
+
+        chunks: List[str] = []
+        current = ''
+        for line in lines:
+            candidate = (current + "\n" + line).strip() if current else line
+            if len(candidate) <= self.max_length:
+                current = candidate
+            else:
+                if current:
+                    chunks.append(current)
+                current = f"*{title} (продолжение)*\n{line}"
+
+        if current:
+            chunks.append(current)
+
+        return chunks
+    def format_currency_post(self, rates: Dict, updated_at: datetime) -> str:
+        """Формирует краткий сервисный пост с курсами."""
+        date_line = updated_at.strftime('%d.%m.%Y')
+        time_line = updated_at.strftime('%H:%M')
+
+        usd_rub = float(rates['usd_rub'])
+        eur_rub = float(rates['eur_rub'])
+        cny_rub = float(rates['cny_rub'])
+        rub_usd = float(rates['rub_usd'])
+        btc_usd = float(rates['btc_usd'])
+        btc_rub = float(rates['btc_rub'])
+
+        return (
+            "*Курсы валют*\n"
+            f"{date_line}\n\n"
+            f"$ Доллар — {usd_rub:.2f} ₽\n"
+            f"€ Евро — {eur_rub:.2f} ₽\n"
+            f"¥ Юань — {cny_rub:.2f} ₽\n"
+            f"₽ Рубль — {rub_usd:.4f} $\n"
+            f"₿ Bitcoin — {btc_usd:,.0f} $ / {btc_rub:,.0f} ₽\n\n"
+            f"Обновлено: {time_line} МСК"
+        ).replace(',', ' ')
+
     def can_combine_with_related(self, news: Dict, related_news: Dict) -> bool:
         """
         Проверяет, можно ли объединить новость со связанной в один пост.

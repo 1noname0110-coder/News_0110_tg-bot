@@ -91,6 +91,27 @@ ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '5322247321')
 DIGEST_PUBLISH_HOUR_MSK = _env_int('DIGEST_PUBLISH_HOUR_MSK', 12)
 DIGEST_PUBLISH_MINUTE_MSK = _env_int('DIGEST_PUBLISH_MINUTE_MSK', 0)
 
+# Дополнение после дневного дайджеста (публикуется только при наличии новых важных новостей)
+SUPPLEMENT_PUBLISH_HOUR_MSK = _env_int('SUPPLEMENT_PUBLISH_HOUR_MSK', 12)
+SUPPLEMENT_PUBLISH_MINUTE_MSK = _env_int('SUPPLEMENT_PUBLISH_MINUTE_MSK', 20)
+
+# Вечерний полный итог за день
+EVENING_PUBLISH_HOUR_MSK = _env_int('EVENING_PUBLISH_HOUR_MSK', 19)
+EVENING_PUBLISH_MINUTE_MSK = _env_int('EVENING_PUBLISH_MINUTE_MSK', 0)
+
+
+# Сервисный пост с курсами валют
+CURRENCY_POST_HOUR_MSK = _env_int('CURRENCY_POST_HOUR_MSK', 12)
+CURRENCY_POST_MINUTE_MSK = _env_int('CURRENCY_POST_MINUTE_MSK', 5)
+
+# Опциональное вечернее обновление курсов
+CURRENCY_EVENING_HOUR_MSK = _env_int('CURRENCY_EVENING_HOUR_MSK', 18)
+CURRENCY_EVENING_MINUTE_MSK = _env_int('CURRENCY_EVENING_MINUTE_MSK', 0)
+CURRENCY_ENABLE_EVENING_UPDATE = _env_bool('CURRENCY_ENABLE_EVENING_UPDATE', True)
+
+# Порог существенного изменения курсов для вечернего обновления (%)
+CURRENCY_SIGNIFICANT_CHANGE_PCT = _env_float('CURRENCY_SIGNIFICANT_CHANGE_PCT', 1.5)
+
 # Сколько часов назад брать новости для ежедневной сводки
 DIGEST_LOOKBACK_HOURS = _env_int('DIGEST_LOOKBACK_HOURS', 24)
 
