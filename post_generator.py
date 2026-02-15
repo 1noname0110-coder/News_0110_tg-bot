@@ -203,6 +203,70 @@ class PostGenerator:
 
         return summary
 
+    def compress_to_fact_line(self, title: str, description: str, max_length: int = 170) -> str:
+        """Сжимает новость до 1 строки факта без «воды» и цитат."""
+        base = self.clean_text(title)
+        details = self.summarize_description(description, max_length=max_length)
+
+        # Убираем длинные цитаты и вводные обороты
+        details = re.sub(r'"[^\"]{20,}"', '', details)
+        details = re.sub(r'«[^»]{20,}»', '', details)
+        details = re.sub(r'\b(по его словам|как отметил|как заявили|как сообщили|по данным)\b', '', details, flags=re.IGNORECASE)
+        details = re.sub(r'\s+', ' ', details).strip(' .,-—')
+
+        if details and details.lower() not in base.lower():
+            line = f"{base} — {details}"
+        else:
+            line = base
+
+        line = re.sub(r'\s+', ' ', line).strip()
+        if len(line) > max_length:
+            line = line[: max_length - 1].rstrip() + '…'
+        return line
+
+    def format_structured_digest(
+        self,
+        heading: str,
+        grouped_items: Dict[str, Dict[str, List[Dict]]],
+        generated_at: Optional[datetime] = None,
+    ) -> List[str]:
+        """Формирует структурированный дневной дайджест и возвращает список постов."""
+        parts = [f"*{heading}*"]
+        if generated_at:
+            parts.append(f"🕛 {generated_at.strftime('%d.%m.%Y %H:%M')} МСК")
+        parts.append("")
+
+        for region, topics in grouped_items.items():
+            parts.append(f"*{region}*")
+            for topic, items in topics.items():
+                parts.append(f"_{topic}_")
+                if not items:
+                    parts.append("• Нет значимых обновлений")
+                else:
+                    for item in items:
+                        fact = self.compress_to_fact_line(item.get('title', ''), item.get('description', ''))
+                        parts.append(f"• {fact}")
+                parts.append("")
+
+        raw_text = "\n".join(parts).strip()
+        if len(raw_text) <= self.max_length:
+            return [raw_text]
+
+        # Делим только по блокам, чтобы не превращать канал в поток.
+        chunks: List[str] = []
+        current: List[str] = []
+        for line in parts:
+            candidate = "\n".join(current + [line]).strip()
+            if current and len(candidate) > self.max_length:
+                chunks.append("\n".join(current).strip())
+                current = [line]
+            else:
+                current.append(line)
+        if current:
+            chunks.append("\n".join(current).strip())
+
+        return chunks
+
     def format_digest_post(self, heading: str, items: List[Dict], generated_at: Optional[datetime] = None) -> str:
         """
         Формирует ежедневную сводку по выбранной теме.

@@ -8,7 +8,7 @@ import logging
 import re
 import math
 from datetime import datetime, timedelta, timezone
-from collections import deque, defaultdict
+from collections import deque
 from typing import Optional, List, Dict, Any
 
 from telegram import Bot, Update
@@ -42,6 +42,7 @@ class NewsBot:
         self.pending_breaking_digest: List[Dict] = []
         self.last_collector_stats: Dict[str, Dict[str, int]] = {}
         self.last_update_id: Optional[int] = None
+        self.last_digest_snapshot: Dict[str, set] = {}
 
         logger.info("Бот инициализирован")
 
@@ -697,22 +698,21 @@ class NewsBot:
         return value.astimezone(self.msk_tz)
 
     def _digest_bucket_label(self, topic: str, region: str) -> str:
-        if topic == 'конфликт' and region == 'рф':
-            return 'Вооружённые конфликты • РФ'
-        if topic == 'конфликт' and region == 'мир':
-            return 'Вооружённые конфликты • Мир'
-        if topic == 'экономика' and region == 'рф':
-            return 'Экономическая ситуация • РФ'
-        if topic == 'политика' and region == 'рф':
-            return 'Политика • РФ'
-        if topic == 'общество' and region == 'рф':
-            return 'Общество • РФ'
-        if topic == 'политика' and region == 'мир':
-            return 'Политика • Мир'
-        return 'Прочее'
-
-    def _digest_bucket_key(self, topic: str, region: str) -> str:
-        return f"{topic}_{region}"
+        if region == 'рф' and topic == 'политика':
+            return 'Политика'
+        if region == 'рф' and topic == 'экономика':
+            return 'Экономика'
+        if region == 'рф' and topic in {'конфликт', 'безопасность'}:
+            return 'Безопасность'
+        if region == 'мир' and topic in {'политика', 'конфликт'}:
+            return 'Геополитика'
+        if region == 'мир' and topic == 'экономика':
+            return 'Экономика'
+        if region == 'мир' and topic == 'общество':
+            return 'Жизнь за рубежом'
+        if region == 'рф':
+            return 'Политика'
+        return 'Геополитика'
 
     def _filter_news_for_digest(self, news: Dict) -> bool:
         if self.is_excluded_russian_topic(news):
@@ -731,13 +731,76 @@ class NewsBot:
             return False
         return True
 
-    async def publish_daily_digest(self) -> None:
+    def _digest_outline(self) -> Dict[str, Dict[str, List[Dict]]]:
+        return {
+            'РОССИЯ': {
+                'Политика': [],
+                'Экономика': [],
+                'Безопасность': [],
+            },
+            'МИР': {
+                'Геополитика': [],
+                'Экономика': [],
+                'Жизнь за рубежом': [],
+            },
+        }
+
+    def _group_digest_news(self, filtered_news: List[Dict]) -> Dict[str, Dict[str, List[Dict]]]:
+        grouped = self._digest_outline()
+
+        for news in filtered_news:
+            topic = self._detect_topic(news)
+            if topic == 'неопределено':
+                continue
+            region = self._detect_region(news)
+            section = 'РОССИЯ' if region == 'рф' else 'МИР'
+            category = self._digest_bucket_label(topic, region)
+            if category in grouped[section]:
+                grouped[section][category].append(news)
+
+        for section in grouped.values():
+            for topic_name, items in section.items():
+                items.sort(key=lambda x: (x.get('priority_score', 0.0), x['published_at']), reverse=True)
+
+        return grouped
+
+    def _snapshot_ids(self, grouped_items: Dict[str, Dict[str, List[Dict]]]) -> Dict[str, set]:
+        snapshot = {}
+        for section, topics in grouped_items.items():
+            for topic, items in topics.items():
+                key = f"{section}:{topic}"
+                ids = set()
+                for item in items:
+                    normalized_url = self.database.normalize_url(item.get('url', ''))
+                    content_hash = self.database.generate_content_hash(item.get('title', ''), item.get('description', ''))
+                    ids.add(normalized_url or content_hash)
+                snapshot[key] = ids
+        return snapshot
+
+    def _extract_new_since_snapshot(
+        self,
+        grouped_items: Dict[str, Dict[str, List[Dict]]],
+        base_snapshot: Dict[str, set],
+    ) -> Dict[str, Dict[str, List[Dict]]]:
+        result = self._digest_outline()
+        for section, topics in grouped_items.items():
+            for topic, items in topics.items():
+                key = f"{section}:{topic}"
+                already = base_snapshot.get(key, set())
+                for item in items:
+                    normalized_url = self.database.normalize_url(item.get('url', ''))
+                    content_hash = self.database.generate_content_hash(item.get('title', ''), item.get('description', ''))
+                    item_id = normalized_url or content_hash
+                    if item_id and item_id not in already:
+                        result[section][topic].append(item)
+        return result
+
+    async def publish_daily_digest(self, mode: str = 'midday') -> None:
         try:
-            logger.info("Сбор новостей для ежедневной сводки...")
+            logger.info("Сбор новостей для ежедневной сводки (%s)...", mode)
             all_news = await self.news_collector.collect_all_news()
             self.last_collector_stats = self.news_collector.last_fetch_stats
             new_news = self.news_collector.filter_new_news(all_news, self.database)
-            effective_breaking_threshold = self._adaptive_breaking_threshold(len(new_news))
 
             now_msk = datetime.now(self.msk_tz)
             lookback_boundary = now_msk - timedelta(hours=config.DIGEST_LOOKBACK_HOURS)
@@ -746,122 +809,50 @@ class NewsBot:
                 if self._filter_news_for_digest(news)
                 and self._to_msk(news.get('published_at', now_msk)) >= lookback_boundary
             ]
+            grouped_items = self._group_digest_news(filtered_news)
+            current_snapshot = self._snapshot_ids(grouped_items)
 
-            buckets: Dict[str, List[Dict]] = {
-                self._digest_bucket_key('конфликт', 'мир'): [],
-                self._digest_bucket_key('конфликт', 'рф'): [],
-                self._digest_bucket_key('экономика', 'рф'): [],
-                self._digest_bucket_key('политика', 'рф'): [],
-                self._digest_bucket_key('политика', 'мир'): [],
-                self._digest_bucket_key('общество', 'рф'): []
-            }
+            if mode == 'supplement':
+                grouped_items = self._extract_new_since_snapshot(grouped_items, self.last_digest_snapshot)
+                has_updates = any(grouped_items[s][t] for s in grouped_items for t in grouped_items[s])
+                if not has_updates:
+                    logger.info("Дополнение пропущено: новых важных новостей после основного дайджеста нет")
+                    return
+                heading = 'Дополнение к дневному дайджесту'
+            elif mode == 'evening':
+                heading = 'Главное за день'
+            else:
+                heading = 'Главное за день'
 
-            for news in filtered_news:
-                topic = self._detect_topic(news)
-                if topic == 'неопределено':
-                    continue
-                region = self._detect_region(news)
-                if region == 'мир' and topic in {'экономика', 'общество'}:
-                    # Для мировой экономики/общества используем рубрику мировой политики,
-                    # чтобы не терять значимые международные события.
-                    bucket_key = self._digest_bucket_key('политика', 'мир')
-                else:
-                    bucket_key = self._digest_bucket_key(topic, region)
-                if bucket_key in buckets:
-                    buckets[bucket_key].append(news)
-
-            for bucket_key, items in buckets.items():
-                items.sort(
-                    key=lambda x: (x.get('priority_score', 0.0), x['published_at']),
-                    reverse=True
-                )
-                # Не обрезаем здесь: иначе overflow всегда пуст и вторая волна не сработает.
-                buckets[bucket_key] = items
-
-            used_urls = set()
-            used_hashes = set()
-            second_wave_posts = []
-
-            for bucket_key, items in buckets.items():
-                topic, region = bucket_key.split('_', maxsplit=1)
-                heading = self._digest_bucket_label(topic, region)
-                unique_items = []
-                for item in items:
-                    normalized_url = self.database.normalize_url(item.get('url', ''))
-                    content_hash = self.database.generate_content_hash(
-                        item.get('title', ''),
-                        item.get('description', '')
-                    )
-                    if normalized_url and normalized_url in used_urls:
-                        continue
-                    if content_hash and content_hash in used_hashes:
-                        continue
-                    if normalized_url:
-                        used_urls.add(normalized_url)
-                    if content_hash:
-                        used_hashes.add(content_hash)
-                    unique_items.append(item)
-
-                first_wave_items = unique_items[:config.DIGEST_MAX_ITEMS]
-                overflow_items = unique_items[config.DIGEST_MAX_ITEMS:]
-
-                post_text = self.post_generator.format_digest_post(heading, first_wave_items, now_msk)
+            posts = self.post_generator.format_structured_digest(heading, grouped_items, now_msk)
+            for post_text in posts:
                 await self._send_message(post_text)
+                await asyncio.sleep(3)
 
-                for item in first_wave_items:
-                    self.database.save_news(
-                        title=item['title'],
-                        url=item['url'],
-                        source=item['source'],
-                        category=bucket_key,
-                        published_at=item.get('published_at', now_msk),
-                        description=item.get('description', '')
-                    )
-
-                if overflow_items:
-                    second_wave_posts.append((bucket_key, heading, overflow_items))
-
-                await asyncio.sleep(5)
-
-            if second_wave_posts:
-                delay_minutes = config.DIGEST_SECOND_WAVE_DELAY_MINUTES
-                logger.info(
-                    "Запланирована вторая волна сводки через %d минут для %d рубрик",
-                    delay_minutes,
-                    len(second_wave_posts)
-                )
-                await asyncio.sleep(delay_minutes * 60)
-
-                for bucket_key, heading, overflow_items in second_wave_posts:
-                    second_wave_heading = f"{heading} (вторая волна)"
-                    second_wave_text = self.post_generator.format_digest_post(second_wave_heading, overflow_items, now_msk)
-                    await self._send_message(second_wave_text)
-
-                    for item in overflow_items:
+            for section, topics in grouped_items.items():
+                for topic, items in topics.items():
+                    category = f"{section}:{topic}"
+                    for item in items:
                         self.database.save_news(
                             title=item['title'],
                             url=item['url'],
                             source=item['source'],
-                            category=bucket_key,
+                            category=category,
                             published_at=item.get('published_at', now_msk),
                             description=item.get('description', '')
                         )
 
-                    await asyncio.sleep(5)
+            if mode in {'midday', 'evening'}:
+                self.last_digest_snapshot = current_snapshot
         except Exception as e:
             logger.error("Ошибка при публикации ежедневной сводки: %s", e, exc_info=True)
 
-    def _seconds_until_next_digest(self) -> float:
-        now = datetime.now(self.msk_tz)
-        target = now.replace(
-            hour=config.DIGEST_PUBLISH_HOUR_MSK,
-            minute=config.DIGEST_PUBLISH_MINUTE_MSK,
-            second=0,
-            microsecond=0
-        )
-        if now >= target:
+    def _next_run_at(self, hour: int, minute: int, now: Optional[datetime] = None) -> datetime:
+        current = now or datetime.now(self.msk_tz)
+        target = current.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if current >= target:
             target += timedelta(days=1)
-        return (target - now).total_seconds()
+        return target
 
     def _adaptive_breaking_threshold(self, recent_count: int) -> float:
         base = config.BREAKING_NEWS_MIN_PRIORITY
@@ -928,20 +919,25 @@ class NewsBot:
             logger.warning("Не удалось отправить админ-отчёт: %s", exc)
 
     async def run_continuously(self):
-        logger.info("Бот запущен. Сводки по расписанию МСК + режим срочных новостей.")
-        next_digest_in = self._seconds_until_next_digest()
-        next_digest_at = datetime.now(self.msk_tz) + timedelta(seconds=next_digest_in)
+        logger.info("Бот запущен. Структурированные дайджесты по расписанию МСК.")
+        now_msk = datetime.now(self.msk_tz)
+        schedule = {
+            'midday': self._next_run_at(config.MIDDAY_DIGEST_HOUR_MSK, config.MIDDAY_DIGEST_MINUTE_MSK, now_msk),
+            'supplement': self._next_run_at(config.SUPPLEMENT_DIGEST_HOUR_MSK, config.SUPPLEMENT_DIGEST_MINUTE_MSK, now_msk),
+            'evening': self._next_run_at(config.EVENING_DIGEST_HOUR_MSK, config.EVENING_DIGEST_MINUTE_MSK, now_msk),
+        }
 
         while True:
             try:
                 now_msk = datetime.now(self.msk_tz)
                 await self._poll_admin_commands()
 
-                if now_msk >= next_digest_at:
-                    await self.publish_daily_digest()
-                    await self._send_admin_report(now_msk)
-                    next_digest_at = next_digest_at + timedelta(days=1)
-                    continue
+                for mode in ('midday', 'supplement', 'evening'):
+                    if now_msk >= schedule[mode]:
+                        await self.publish_daily_digest(mode=mode)
+                        if mode in {'midday', 'evening'}:
+                            await self._send_admin_report(now_msk)
+                        schedule[mode] = schedule[mode] + timedelta(days=1)
 
                 if config.ENABLE_BREAKING_NEWS:
                     await self.process_and_publish_news(breaking_only=True)

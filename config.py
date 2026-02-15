@@ -87,18 +87,18 @@ RSS_FETCH_RETRY_BACKOFF_SECONDS = _env_float('RSS_FETCH_RETRY_BACKOFF_SECONDS', 
 # Формат: @username или chat_id. Пусто — отчёты отключены.
 ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '5322247321')
 
-# Время публикации ежедневной сводки (МСК)
-DIGEST_PUBLISH_HOUR_MSK = _env_int('DIGEST_PUBLISH_HOUR_MSK', 12)
-DIGEST_PUBLISH_MINUTE_MSK = _env_int('DIGEST_PUBLISH_MINUTE_MSK', 0)
+# Расписание структурированных дайджестов (МСК)
+MIDDAY_DIGEST_HOUR_MSK = _env_int('MIDDAY_DIGEST_HOUR_MSK', 12)
+MIDDAY_DIGEST_MINUTE_MSK = _env_int('MIDDAY_DIGEST_MINUTE_MSK', 0)
 
-# Сколько часов назад брать новости для ежедневной сводки
+SUPPLEMENT_DIGEST_HOUR_MSK = _env_int('SUPPLEMENT_DIGEST_HOUR_MSK', 12)
+SUPPLEMENT_DIGEST_MINUTE_MSK = _env_int('SUPPLEMENT_DIGEST_MINUTE_MSK', 20)
+
+EVENING_DIGEST_HOUR_MSK = _env_int('EVENING_DIGEST_HOUR_MSK', 19)
+EVENING_DIGEST_MINUTE_MSK = _env_int('EVENING_DIGEST_MINUTE_MSK', 0)
+
+# Сколько часов назад брать новости для полного дневного отчёта
 DIGEST_LOOKBACK_HOURS = _env_int('DIGEST_LOOKBACK_HOURS', 24)
-
-# Максимум новостей в одном ежедневном посте
-DIGEST_MAX_ITEMS = _env_int('DIGEST_MAX_ITEMS', 5)
-
-# Задержка перед второй волной публикаций (если в рубрике не уместились все важные новости)
-DIGEST_SECOND_WAVE_DELAY_MINUTES = _env_int('DIGEST_SECOND_WAVE_DELAY_MINUTES', 20)
 
 # Количество новостей для проверки за один раз
 NEWS_CHECK_BATCH = 20
@@ -166,14 +166,14 @@ NEWS_SOURCES = [
     {'name': 'Российская Газета Мир', 'url': 'https://rg.ru/xml/index.xml', 'category': 'мир'},
 ]
 
-# Целевые рубрики канала
+# Целевые рубрики дневного отчёта
 CATEGORIES = [
-    'экономика рф',
-    'политика рф',
-    'политика мир',
-    'общество рф',
-    'вооружённые конфликты мир',
-    'вооружённые конфликты рф'
+    'россия: политика',
+    'россия: экономика',
+    'россия: безопасность',
+    'мир: геополитика',
+    'мир: экономика',
+    'мир: жизнь за рубежом'
 ]
 
 # Ключевые слова, указывающие на новости о вооружённых конфликтах
