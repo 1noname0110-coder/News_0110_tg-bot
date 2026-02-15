@@ -9,7 +9,7 @@ import re
 import math
 from datetime import datetime, timedelta, timezone
 from collections import deque, defaultdict
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from telegram import Bot, Update
 from telegram.constants import ParseMode
@@ -18,6 +18,7 @@ import config
 from database import NewsDatabase
 from news_collector import NewsCollector
 from post_generator import PostGenerator
+from currency_fetcher import CurrencyFetcher
 
 # Настройка логирования для отслеживания работы бота
 logging.basicConfig(
@@ -36,12 +37,16 @@ class NewsBot:
         self.database = NewsDatabase(config.DATABASE_PATH)
         self.news_collector = NewsCollector(config.NEWS_SOURCES)
         self.post_generator = PostGenerator(config.MAX_POST_LENGTH)
+        self.currency_fetcher = CurrencyFetcher()
         self.pending_news: Dict[str, Dict] = {}
         self.msk_tz = timezone(timedelta(hours=3))
         self.breaking_publish_times = deque()
         self.pending_breaking_digest: List[Dict] = []
         self.last_collector_stats: Dict[str, Dict[str, int]] = {}
         self.last_update_id: Optional[int] = None
+        self.last_digest_windows: Dict[str, Tuple[datetime, datetime]] = {}
+        self.last_main_digest_compiled_at: Optional[datetime] = None
+        self.last_currency_windows: Dict[str, datetime] = {}
 
         logger.info("Бот инициализирован")
 
@@ -113,6 +118,12 @@ class NewsBot:
                 return
             config.BREAKING_NEWS_MIN_PRIORITY = max(1.0, min(new_threshold, 20.0))
             await self._send_admin_message(f"Новый порог breaking: {config.BREAKING_NEWS_MIN_PRIORITY:.2f}")
+            return
+
+        if cmd == '/rates':
+            force_mode = len(parts) > 1 and parts[1].lower() == 'force'
+            await self.publish_currency_rates(slot='manual', force=force_mode)
+            await self._send_admin_message('Публикация курсов выполнена.' if force_mode else 'Проверка и публикация курсов выполнены.')
             return
 
         if cmd == '/sources':
@@ -696,172 +707,210 @@ class NewsBot:
             return value.replace(tzinfo=self.msk_tz)
         return value.astimezone(self.msk_tz)
 
-    def _digest_bucket_label(self, topic: str, region: str) -> str:
-        if topic == 'конфликт' and region == 'рф':
-            return 'Вооружённые конфликты • РФ'
-        if topic == 'конфликт' and region == 'мир':
-            return 'Вооружённые конфликты • Мир'
-        if topic == 'экономика' and region == 'рф':
-            return 'Экономическая ситуация • РФ'
-        if topic == 'политика' and region == 'рф':
-            return 'Политика • РФ'
-        if topic == 'общество' and region == 'рф':
-            return 'Общество • РФ'
-        if topic == 'политика' and region == 'мир':
-            return 'Политика • Мир'
-        return 'Прочее'
+    def _digest_sections_template(self) -> Dict[str, Dict[str, List[Dict]]]:
+        return {
+            'РОССИЯ': {
+                'Политика': [],
+                'Экономика': [],
+                'Безопасность': [],
+            },
+            'МИР': {
+                'Геополитика': [],
+                'Экономика': [],
+                'Жизнь за рубежом': [],
+            },
+        }
 
-    def _digest_bucket_key(self, topic: str, region: str) -> str:
-        return f"{topic}_{region}"
+    def _digest_section_path(self, news: Dict) -> Optional[Tuple[str, str]]:
+        topic = self._detect_topic(news)
+        region = self._detect_region(news)
+
+        if region == 'рф':
+            if topic == 'политика':
+                return 'РОССИЯ', 'Политика'
+            if topic == 'экономика':
+                return 'РОССИЯ', 'Экономика'
+            if topic in {'конфликт', 'общество'}:
+                return 'РОССИЯ', 'Безопасность'
+            return None
+
+        if topic == 'экономика':
+            return 'МИР', 'Экономика'
+        if topic == 'политика' or topic == 'конфликт':
+            return 'МИР', 'Геополитика'
+        if topic == 'общество':
+            return 'МИР', 'Жизнь за рубежом'
+        return None
 
     def _filter_news_for_digest(self, news: Dict) -> bool:
         if self.is_excluded_russian_topic(news):
             return False
-        categories = self._detect_categories(news)
-        if not categories:
-            return False
-        news['categories'] = categories
-        news['category'] = categories[0]
-        news['priority_score'] = self._news_priority_score(news)
         if self.is_unwanted_local_news(news):
             return False
         if self.is_blocked_crime_news(news):
             return False
         if self.is_low_value_news(news):
             return False
+
+        if not self._digest_section_path(news):
+            return False
+
+        news['priority_score'] = self._news_priority_score(news)
         return True
 
-    async def publish_daily_digest(self) -> None:
-        try:
-            logger.info("Сбор новостей для ежедневной сводки...")
-            all_news = await self.news_collector.collect_all_news()
-            self.last_collector_stats = self.news_collector.last_fetch_stats
-            new_news = self.news_collector.filter_new_news(all_news, self.database)
-            effective_breaking_threshold = self._adaptive_breaking_threshold(len(new_news))
+    def _deduplicate_news(self, items: List[Dict]) -> List[Dict]:
+        seen_urls = set()
+        seen_hashes = set()
+        unique = []
 
-            now_msk = datetime.now(self.msk_tz)
-            lookback_boundary = now_msk - timedelta(hours=config.DIGEST_LOOKBACK_HOURS)
-            filtered_news = [
-                news for news in new_news
-                if self._filter_news_for_digest(news)
-                and self._to_msk(news.get('published_at', now_msk)) >= lookback_boundary
+        for item in items:
+            normalized_url = self.database.normalize_url(item.get('url', ''))
+            content_hash = self.database.generate_content_hash(
+                item.get('title', ''),
+                item.get('description', '')
+            )
+
+            if normalized_url and normalized_url in seen_urls:
+                continue
+            if content_hash and content_hash in seen_hashes:
+                continue
+
+            if normalized_url:
+                seen_urls.add(normalized_url)
+            if content_hash:
+                seen_hashes.add(content_hash)
+            unique.append(item)
+
+        return unique
+
+    async def _collect_digest_news(self, start_at: datetime, end_at: datetime) -> List[Dict]:
+        all_news = await self.news_collector.collect_all_news()
+        self.last_collector_stats = self.news_collector.last_fetch_stats
+        new_news = self.news_collector.filter_new_news(all_news, self.database)
+
+        in_window = []
+        for news in new_news:
+            published = self._to_msk(news.get('published_at', end_at))
+            if not (start_at <= published <= end_at):
+                continue
+            if not self._filter_news_for_digest(news):
+                continue
+            in_window.append(news)
+
+        in_window.sort(key=lambda x: (x.get('priority_score', 0.0), x.get('published_at', end_at)), reverse=True)
+        return self._deduplicate_news(in_window)
+
+    def _group_for_sections(self, items: List[Dict]) -> Dict[str, Dict[str, List[Dict]]]:
+        sections = self._digest_sections_template()
+        for item in items:
+            path = self._digest_section_path(item)
+            if not path:
+                continue
+            major, sub = path
+            sections[major][sub].append(item)
+        return sections
+
+    async def _publish_digest_window(
+        self,
+        title: str,
+        start_at: datetime,
+        end_at: datetime,
+        digest_type: str,
+        only_if_new_after: Optional[datetime] = None
+    ) -> None:
+        logger.info("Сбор новостей для дайджеста '%s'...", digest_type)
+        digest_news = await self._collect_digest_news(start_at, end_at)
+
+        if only_if_new_after is not None:
+            digest_news = [
+                item for item in digest_news
+                if self._to_msk(item.get('published_at', end_at)) > only_if_new_after
             ]
+            if not digest_news:
+                logger.info("Для дайджеста '%s' нет новых важных новостей после основного поста", digest_type)
+                self.last_digest_windows[digest_type] = (start_at, end_at)
+                return
 
-            buckets: Dict[str, List[Dict]] = {
-                self._digest_bucket_key('конфликт', 'мир'): [],
-                self._digest_bucket_key('конфликт', 'рф'): [],
-                self._digest_bucket_key('экономика', 'рф'): [],
-                self._digest_bucket_key('политика', 'рф'): [],
-                self._digest_bucket_key('политика', 'мир'): [],
-                self._digest_bucket_key('общество', 'рф'): []
-            }
+        sections = self._group_for_sections(digest_news)
+        post_text = self.post_generator.format_structured_digest_post(title, sections, end_at)
+        await self._send_message(post_text)
 
-            for news in filtered_news:
-                topic = self._detect_topic(news)
-                if topic == 'неопределено':
-                    continue
-                region = self._detect_region(news)
-                if region == 'мир' and topic in {'экономика', 'общество'}:
-                    # Для мировой экономики/общества используем рубрику мировой политики,
-                    # чтобы не терять значимые международные события.
-                    bucket_key = self._digest_bucket_key('политика', 'мир')
-                else:
-                    bucket_key = self._digest_bucket_key(topic, region)
-                if bucket_key in buckets:
-                    buckets[bucket_key].append(news)
+        for item in digest_news:
+            self.database.save_news(
+                title=item['title'],
+                url=item['url'],
+                source=item.get('source', 'Unknown'),
+                category=f'digest_{digest_type}',
+                published_at=item.get('published_at', end_at),
+                description=item.get('description', '')
+            )
 
-            for bucket_key, items in buckets.items():
-                items.sort(
-                    key=lambda x: (x.get('priority_score', 0.0), x['published_at']),
-                    reverse=True
-                )
-                # Не обрезаем здесь: иначе overflow всегда пуст и вторая волна не сработает.
-                buckets[bucket_key] = items
+        self.last_digest_windows[digest_type] = (start_at, end_at)
+        if digest_type == 'main':
+            self.last_main_digest_compiled_at = end_at
 
-            used_urls = set()
-            used_hashes = set()
-            second_wave_posts = []
-
-            for bucket_key, items in buckets.items():
-                topic, region = bucket_key.split('_', maxsplit=1)
-                heading = self._digest_bucket_label(topic, region)
-                unique_items = []
-                for item in items:
-                    normalized_url = self.database.normalize_url(item.get('url', ''))
-                    content_hash = self.database.generate_content_hash(
-                        item.get('title', ''),
-                        item.get('description', '')
-                    )
-                    if normalized_url and normalized_url in used_urls:
-                        continue
-                    if content_hash and content_hash in used_hashes:
-                        continue
-                    if normalized_url:
-                        used_urls.add(normalized_url)
-                    if content_hash:
-                        used_hashes.add(content_hash)
-                    unique_items.append(item)
-
-                first_wave_items = unique_items[:config.DIGEST_MAX_ITEMS]
-                overflow_items = unique_items[config.DIGEST_MAX_ITEMS:]
-
-                post_text = self.post_generator.format_digest_post(heading, first_wave_items, now_msk)
-                await self._send_message(post_text)
-
-                for item in first_wave_items:
-                    self.database.save_news(
-                        title=item['title'],
-                        url=item['url'],
-                        source=item['source'],
-                        category=bucket_key,
-                        published_at=item.get('published_at', now_msk),
-                        description=item.get('description', '')
-                    )
-
-                if overflow_items:
-                    second_wave_posts.append((bucket_key, heading, overflow_items))
-
-                await asyncio.sleep(5)
-
-            if second_wave_posts:
-                delay_minutes = config.DIGEST_SECOND_WAVE_DELAY_MINUTES
-                logger.info(
-                    "Запланирована вторая волна сводки через %d минут для %d рубрик",
-                    delay_minutes,
-                    len(second_wave_posts)
-                )
-                await asyncio.sleep(delay_minutes * 60)
-
-                for bucket_key, heading, overflow_items in second_wave_posts:
-                    second_wave_heading = f"{heading} (вторая волна)"
-                    second_wave_text = self.post_generator.format_digest_post(second_wave_heading, overflow_items, now_msk)
-                    await self._send_message(second_wave_text)
-
-                    for item in overflow_items:
-                        self.database.save_news(
-                            title=item['title'],
-                            url=item['url'],
-                            source=item['source'],
-                            category=bucket_key,
-                            published_at=item.get('published_at', now_msk),
-                            description=item.get('description', '')
-                        )
-
-                    await asyncio.sleep(5)
-        except Exception as e:
-            logger.error("Ошибка при публикации ежедневной сводки: %s", e, exc_info=True)
-
-    def _seconds_until_next_digest(self) -> float:
-        now = datetime.now(self.msk_tz)
-        target = now.replace(
-            hour=config.DIGEST_PUBLISH_HOUR_MSK,
-            minute=config.DIGEST_PUBLISH_MINUTE_MSK,
-            second=0,
-            microsecond=0
+    async def publish_main_digest(self) -> None:
+        now_msk = datetime.now(self.msk_tz)
+        start_at = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
+        await self._publish_digest_window(
+            title='Главное за день',
+            start_at=start_at,
+            end_at=now_msk,
+            digest_type='main'
         )
-        if now >= target:
-            target += timedelta(days=1)
-        return (target - now).total_seconds()
+
+    async def publish_supplement_digest(self) -> None:
+        if not self.last_main_digest_compiled_at:
+            logger.info('Дополнение пропущено: основной дайджест еще не собран')
+            return
+        now_msk = datetime.now(self.msk_tz)
+        start_at = self.last_main_digest_compiled_at
+        await self._publish_digest_window(
+            title='Главное за день — дополнение',
+            start_at=start_at,
+            end_at=now_msk,
+            digest_type='supplement',
+            only_if_new_after=self.last_main_digest_compiled_at
+        )
+
+    async def publish_evening_digest(self) -> None:
+        now_msk = datetime.now(self.msk_tz)
+        start_at = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
+        await self._publish_digest_window(
+            title='Главное за день',
+            start_at=start_at,
+            end_at=now_msk,
+            digest_type='evening'
+        )
+
+    def _scheduled_digest_targets(self) -> Dict[str, datetime]:
+        now = datetime.now(self.msk_tz)
+        return {
+            'main': now.replace(hour=config.DIGEST_MAIN_HOUR_MSK, minute=config.DIGEST_MAIN_MINUTE_MSK, second=0, microsecond=0),
+            'supplement': now.replace(hour=config.DIGEST_SUPPLEMENT_HOUR_MSK, minute=config.DIGEST_SUPPLEMENT_MINUTE_MSK, second=0, microsecond=0),
+            'evening': now.replace(hour=config.DIGEST_EVENING_HOUR_MSK, minute=config.DIGEST_EVENING_MINUTE_MSK, second=0, microsecond=0),
+        }
+
+    async def _run_scheduled_digests(self, now_msk: datetime) -> None:
+        today = now_msk.date().isoformat()
+        targets = self._scheduled_digest_targets()
+
+        if now_msk >= targets['main'] and self.last_digest_windows.get('main', (None, None))[1] is None:
+            await self.publish_main_digest()
+            await self._send_admin_report(now_msk)
+
+        if now_msk >= targets['supplement'] and self.last_digest_windows.get('supplement', (None, None))[1] is None:
+            await self.publish_supplement_digest()
+
+        if now_msk >= targets['evening'] and self.last_digest_windows.get('evening', (None, None))[1] is None:
+            await self.publish_evening_digest()
+            await self._send_admin_report(now_msk)
+
+        # Сброс меток при переходе на следующий день
+        for digest_type in ('main', 'supplement', 'evening'):
+            end = self.last_digest_windows.get(digest_type, (None, None))[1]
+            if end and end.date().isoformat() != today:
+                self.last_digest_windows.pop(digest_type, None)
 
     def _adaptive_breaking_threshold(self, recent_count: int) -> float:
         base = config.BREAKING_NEWS_MIN_PRIORITY
@@ -903,6 +952,78 @@ class NewsBot:
             )
         self.pending_breaking_digest.clear()
 
+    def _currency_slot_key(self, slot: str, now_msk: datetime) -> str:
+        return f"{slot}_{now_msk.strftime('%Y%m%d')}"
+
+    def _currency_percent_change(self, old_value: Optional[float], new_value: Optional[float]) -> float:
+        if old_value in (None, 0) or new_value is None:
+            return 0.0
+        return abs((new_value - old_value) / old_value) * 100
+
+    def _currency_changed_significantly(self, previous: Dict, current: Dict) -> bool:
+        threshold = max(config.CURRENCY_SIGNIFICANT_CHANGE_PERCENT, 0.1)
+        keys = ('usd_rub', 'eur_rub', 'cny_rub', 'btc_usd', 'btc_rub')
+        max_change = 0.0
+        for key in keys:
+            change = self._currency_percent_change(previous.get(key), current.get(key))
+            max_change = max(max_change, change)
+        return max_change >= threshold
+
+    async def publish_currency_rates(self, slot: str, force: bool = False) -> bool:
+        now_msk = datetime.now(self.msk_tz)
+        slot_key = self._currency_slot_key(slot, now_msk)
+
+        if not force and self.database.is_currency_post_published(slot_key):
+            logger.info("Курсы для слота %s уже опубликованы", slot_key)
+            return False
+
+        rates = await self.currency_fetcher.fetch_rates()
+        if not rates:
+            logger.warning('Не удалось получить курсы — пост не публикуем')
+            return False
+
+        if slot == 'evening' and not force:
+            base_slot_key = self._currency_slot_key('daily', now_msk)
+            baseline = self.database.get_currency_rates_by_slot(base_slot_key) or (self.database.get_last_currency_post() or {}).get('payload')
+            if baseline and not self._currency_changed_significantly(baseline, rates):
+                logger.info('Сильных изменений курсов нет — вечерний пост пропущен')
+                self.last_currency_windows[slot] = now_msk
+                return False
+
+        post_text = self.post_generator.format_currency_post(rates, now_msk)
+        await self._send_message(post_text)
+        self.database.save_currency_post(slot_key, rates)
+        self.last_currency_windows[slot] = now_msk
+        logger.info('Опубликован сервисный пост с курсами (%s)', slot)
+        return True
+
+    async def _run_scheduled_currency_posts(self, now_msk: datetime) -> None:
+        today = now_msk.date().isoformat()
+
+        daily_target = now_msk.replace(
+            hour=config.CURRENCY_DAILY_HOUR_MSK,
+            minute=config.CURRENCY_DAILY_MINUTE_MSK,
+            second=0,
+            microsecond=0
+        )
+        evening_target = now_msk.replace(
+            hour=config.CURRENCY_EVENING_HOUR_MSK,
+            minute=config.CURRENCY_EVENING_MINUTE_MSK,
+            second=0,
+            microsecond=0
+        )
+
+        daily_last = self.last_currency_windows.get('daily')
+        daily_done_today = bool(daily_last and daily_last.date().isoformat() == today)
+        if now_msk >= daily_target and not daily_done_today:
+            await self.publish_currency_rates(slot='daily')
+
+        if config.CURRENCY_EVENING_UPDATE_ENABLED:
+            evening_last = self.last_currency_windows.get('evening')
+            evening_done_today = bool(evening_last and evening_last.date().isoformat() == today)
+            if now_msk >= evening_target and not evening_done_today:
+                await self.publish_currency_rates(slot='evening')
+
     async def _send_admin_report(self, now_msk: datetime) -> None:
         if not config.ADMIN_CHAT_ID:
             return
@@ -928,20 +1049,14 @@ class NewsBot:
             logger.warning("Не удалось отправить админ-отчёт: %s", exc)
 
     async def run_continuously(self):
-        logger.info("Бот запущен. Сводки по расписанию МСК + режим срочных новостей.")
-        next_digest_in = self._seconds_until_next_digest()
-        next_digest_at = datetime.now(self.msk_tz) + timedelta(seconds=next_digest_in)
+        logger.info("Бот запущен. Работают три окна дайджеста (12:00, 12:20, 19:00 МСК) + режим срочных новостей.")
 
         while True:
             try:
                 now_msk = datetime.now(self.msk_tz)
                 await self._poll_admin_commands()
-
-                if now_msk >= next_digest_at:
-                    await self.publish_daily_digest()
-                    await self._send_admin_report(now_msk)
-                    next_digest_at = next_digest_at + timedelta(days=1)
-                    continue
+                await self._run_scheduled_digests(now_msk)
+                await self._run_scheduled_currency_posts(now_msk)
 
                 if config.ENABLE_BREAKING_NEWS:
                     await self.process_and_publish_news(breaking_only=True)

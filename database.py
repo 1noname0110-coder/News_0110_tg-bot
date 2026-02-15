@@ -6,6 +6,7 @@
 import sqlite3
 import hashlib
 import re
+import json
 from datetime import datetime
 from typing import Optional, List, Dict
 
@@ -66,6 +67,20 @@ class NewsDatabase:
             )
         ''')
         
+        # Таблица публикаций курсов валют
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS currency_posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                slot_key TEXT UNIQUE NOT NULL,
+                rates_hash TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_currency_slot_key ON currency_posts(slot_key)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_currency_created_at ON currency_posts(created_at)')
+
         # Создаем индексы для быстрого поиска
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_news_hash ON news(news_hash)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_news_published_at ON news(published_at)')
@@ -392,6 +407,64 @@ class NewsDatabase:
         conn.commit()
         conn.close()
     
+    def _rates_hash(self, rates: Dict) -> str:
+        payload = json.dumps(rates, sort_keys=True, ensure_ascii=False)
+        return hashlib.md5(payload.encode('utf-8')).hexdigest()
+
+    def is_currency_post_published(self, slot_key: str) -> bool:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT id FROM currency_posts WHERE slot_key = ?', (slot_key,))
+        result = cursor.fetchone()
+        conn.close()
+        return bool(result)
+
+    def save_currency_post(self, slot_key: str, rates: Dict) -> None:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        rates_hash = self._rates_hash(rates)
+        payload = json.dumps(rates, ensure_ascii=False, sort_keys=True)
+        cursor.execute("""
+            INSERT OR REPLACE INTO currency_posts (slot_key, rates_hash, payload)
+            VALUES (?, ?, ?)
+        """, (slot_key, rates_hash, payload))
+        conn.commit()
+        conn.close()
+
+    def get_last_currency_post(self) -> Optional[Dict]:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT slot_key, rates_hash, payload, created_at
+            FROM currency_posts
+            ORDER BY datetime(created_at) DESC
+            LIMIT 1
+        """)
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return None
+
+        payload = json.loads(row['payload']) if row['payload'] else {}
+        return {
+            'slot_key': row['slot_key'],
+            'rates_hash': row['rates_hash'],
+            'payload': payload,
+            'created_at': row['created_at']
+        }
+
+    def get_currency_rates_by_slot(self, slot_key: str) -> Optional[Dict]:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('SELECT payload FROM currency_posts WHERE slot_key = ?', (slot_key,))
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return None
+        return json.loads(row['payload']) if row['payload'] else None
+
     def get_news_stats(self, hours: int | None = None) -> Dict:
         """
         Получает статистику по опубликованным новостям.
