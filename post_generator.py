@@ -203,6 +203,74 @@ class PostGenerator:
 
         return summary
 
+    def compress_to_fact_line(self, news: Dict, max_length: int = 170) -> str:
+        """Сжимает новость до 1 строки факта без лишних деталей."""
+        title = self.clean_text(news.get('title', ''))
+        summary = self.summarize_description(news.get('description', ''), max_length=120)
+
+        base = title
+        if summary:
+            summary = re.sub(r'^[«"\']+|[»"\']+$', '', summary).strip()
+            summary = re.sub(r'\b(по словам|как заявил|как отметили|по данным)\b[^,.!?:;]*', '', summary, flags=re.IGNORECASE).strip(' ,;:-')
+            base = f"{title} — {summary}"
+
+        base = re.sub(r'\s+', ' ', base).strip(' .')
+        if len(base) > max_length:
+            base = base[:max_length - 1].rstrip() + '…'
+        return base
+
+    def format_structured_digest_post(
+        self,
+        title: str,
+        sections: Dict[str, Dict[str, List[Dict]]],
+        generated_at: Optional[datetime] = None
+    ) -> str:
+        """Формирует структурированный дневной отчёт по рубрикам."""
+        parts = [f"*{title}*"]
+        if generated_at:
+            parts.append(f"🕛 {generated_at.strftime('%d.%m.%Y %H:%M')} МСК")
+        parts.append('')
+
+        total_items = 0
+        for major, sub_sections in sections.items():
+            major_has_items = any(items for items in sub_sections.values())
+            if not major_has_items:
+                continue
+
+            parts.append(f"*{major}*")
+            for sub_name, items in sub_sections.items():
+                if not items:
+                    continue
+                parts.append(f"_{sub_name}_")
+                for item in items:
+                    line = self.compress_to_fact_line(item)
+                    if line:
+                        parts.append(f"• {line}")
+                        total_items += 1
+                parts.append('')
+
+        if total_items == 0:
+            parts.append('Сегодня без значимых новостей.')
+
+        post = "\n".join(parts).strip()
+        if len(post) <= self.max_length:
+            return post
+
+        # Если пост слишком длинный, сокращаем каждую строку-факт еще сильнее
+        compact_parts = []
+        for line in post.splitlines():
+            if line.startswith('• '):
+                trimmed = line[:140]
+                if len(line) > 140:
+                    trimmed = trimmed.rstrip() + '…'
+                compact_parts.append(trimmed)
+            else:
+                compact_parts.append(line)
+        compact_post = "\n".join(compact_parts)
+        if len(compact_post) > self.max_length:
+            compact_post = compact_post[:self.max_length - 1].rstrip() + '…'
+        return compact_post
+
     def format_digest_post(self, heading: str, items: List[Dict], generated_at: Optional[datetime] = None) -> str:
         """
         Формирует ежедневную сводку по выбранной теме.
@@ -236,6 +304,38 @@ class PostGenerator:
                 post_parts.append(f"• [{title}]({url})")
 
         return "\n".join(post_parts)
+
+    def format_currency_post(self, rates: Dict, now_msk: datetime) -> str:
+        """Формирует краткий сервисный пост с курсами валют и BTC."""
+        usd_rub = rates.get('usd_rub')
+        eur_rub = rates.get('eur_rub')
+        cny_rub = rates.get('cny_rub')
+        rub_usd = rates.get('rub_usd')
+        btc_usd = rates.get('btc_usd')
+        btc_rub = rates.get('btc_rub')
+
+        def fmt(value: Optional[float], digits: int = 2, suffix: str = '') -> str:
+            if value is None:
+                return 'н/д'
+            return f"{value:,.{digits}f}".replace(',', ' ') + suffix
+
+        parts = [
+            '*Курсы валют*',
+            now_msk.strftime('%d.%m.%Y'),
+            '',
+            f"$ Доллар — {fmt(usd_rub, 2, ' ₽')}",
+            f"€ Евро — {fmt(eur_rub, 2, ' ₽')}",
+            f"¥ Юань — {fmt(cny_rub, 3, ' ₽')}",
+            f"₽ Рубль — {fmt(rub_usd, 4, ' $')}",
+            f"₿ Bitcoin — {fmt(btc_usd, 0, ' $')} | {fmt(btc_rub, 0, ' ₽')}",
+            '',
+            f"Обновлено: {now_msk.strftime('%H:%M')} МСК",
+        ]
+
+        text = "\n".join(parts)
+        if len(text) > self.max_length:
+            text = text[:self.max_length - 1] + '…'
+        return text
 
     def can_combine_with_related(self, news: Dict, related_news: Dict) -> bool:
         """

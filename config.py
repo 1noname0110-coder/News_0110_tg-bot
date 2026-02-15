@@ -87,18 +87,27 @@ RSS_FETCH_RETRY_BACKOFF_SECONDS = _env_float('RSS_FETCH_RETRY_BACKOFF_SECONDS', 
 # Формат: @username или chat_id. Пусто — отчёты отключены.
 ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '5322247321')
 
-# Время публикации ежедневной сводки (МСК)
-DIGEST_PUBLISH_HOUR_MSK = _env_int('DIGEST_PUBLISH_HOUR_MSK', 12)
-DIGEST_PUBLISH_MINUTE_MSK = _env_int('DIGEST_PUBLISH_MINUTE_MSK', 0)
+# Расписание ежедневных дайджестов (МСК)
+DIGEST_MAIN_HOUR_MSK = _env_int('DIGEST_MAIN_HOUR_MSK', 12)
+DIGEST_MAIN_MINUTE_MSK = _env_int('DIGEST_MAIN_MINUTE_MSK', 0)
 
-# Сколько часов назад брать новости для ежедневной сводки
-DIGEST_LOOKBACK_HOURS = _env_int('DIGEST_LOOKBACK_HOURS', 24)
+DIGEST_SUPPLEMENT_HOUR_MSK = _env_int('DIGEST_SUPPLEMENT_HOUR_MSK', 12)
+DIGEST_SUPPLEMENT_MINUTE_MSK = _env_int('DIGEST_SUPPLEMENT_MINUTE_MSK', 20)
 
-# Максимум новостей в одном ежедневном посте
-DIGEST_MAX_ITEMS = _env_int('DIGEST_MAX_ITEMS', 5)
+DIGEST_EVENING_HOUR_MSK = _env_int('DIGEST_EVENING_HOUR_MSK', 19)
+DIGEST_EVENING_MINUTE_MSK = _env_int('DIGEST_EVENING_MINUTE_MSK', 0)
 
-# Задержка перед второй волной публикаций (если в рубрике не уместились все важные новости)
-DIGEST_SECOND_WAVE_DELAY_MINUTES = _env_int('DIGEST_SECOND_WAVE_DELAY_MINUTES', 20)
+# Расписание сервисного поста с курсами (МСК)
+CURRENCY_DAILY_HOUR_MSK = _env_int('CURRENCY_DAILY_HOUR_MSK', 12)
+CURRENCY_DAILY_MINUTE_MSK = _env_int('CURRENCY_DAILY_MINUTE_MSK', 5)
+
+# Опциональная вечерняя публикация курсов, если есть сильное движение
+CURRENCY_EVENING_UPDATE_ENABLED = _env_bool('CURRENCY_EVENING_UPDATE_ENABLED', True)
+CURRENCY_EVENING_HOUR_MSK = _env_int('CURRENCY_EVENING_HOUR_MSK', 18)
+CURRENCY_EVENING_MINUTE_MSK = _env_int('CURRENCY_EVENING_MINUTE_MSK', 0)
+
+# Порог значимого изменения курсов для вечернего обновления, %
+CURRENCY_SIGNIFICANT_CHANGE_PERCENT = _env_float('CURRENCY_SIGNIFICANT_CHANGE_PERCENT', 1.5)
 
 # Количество новостей для проверки за один раз
 NEWS_CHECK_BATCH = 20
